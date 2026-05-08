@@ -1,0 +1,22 @@
+version: "3.8"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # args:
+      #   - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      #   - OPENROUTER_MODEL=${OPENROUTER_MODEL}
+    container_name: chatbot-whatsapp
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      # Persistir base de datos y credenciales fuera del contenedor
+      - ./data:/app/data
+      - ./auth:/app/auth
+    env_file:
+      - .env.local
+    environment:
+      - NODE_ENV=production
