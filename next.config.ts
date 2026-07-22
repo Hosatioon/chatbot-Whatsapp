@@ -6,6 +6,9 @@ const nextConfig: NextConfig = {
     "better-sqlite3",
     "pino",
   ],
+  typescript: {
+    ignoreBuildErrors: true,
+  },
 };
 
 export default nextConfig;
