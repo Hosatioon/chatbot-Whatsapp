@@ -1,14 +1,31 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import QRCode from "qrcode";
 import { getConnectionState } from "@/lib/db";
+import { requireAuth } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
-  const state = getConnectionState();
+export async function GET(req: NextRequest) {
+  let ctx;
+  try {
+    ctx = await requireAuth();
+  } catch (res) {
+    return res as Response;
+  }
 
-  // Defensivo: mostrar QR si qr_string existe, aunque el status no sea
-  // exactamente 'qr' (puede haber transicionado a 'connecting' por race).
+  const url = new URL(req.url);
+  const queryTenant = Number(url.searchParams.get("tenantId") ?? 0);
+  // Super-admin: puede consultar cualquier tenant.
+  // Usuario normal: SOLO su propio tenant (ignoramos query param).
+  const tenantId =
+    ctx.isSuperAdmin && queryTenant > 0 ? queryTenant : ctx.tenantId;
+
+  if (!tenantId) {
+    return NextResponse.json({ error: "tenantId requerido" }, { status: 400 });
+  }
+
+  const state = getConnectionState(tenantId);
+
   const shouldShowQr =
     !!state.qr_string &&
     (state.status === "qr" || state.status === "connecting");
@@ -21,6 +38,7 @@ export async function GET() {
     return NextResponse.json({
       status: "qr",
       qrPng,
+      tenantId,
       updatedAt: state.updated_at,
     });
   }
@@ -28,6 +46,7 @@ export async function GET() {
   return NextResponse.json({
     status: state.status,
     phone: state.phone,
+    tenantId,
     updatedAt: state.updated_at,
   });
 }

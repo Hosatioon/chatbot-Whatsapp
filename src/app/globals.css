@@ -1,7 +1,25 @@
 @import "tailwindcss";
 
+/* ===========================================================================
+   Sistema de temas por tenant.
+   El tema se aplica via [data-theme="..."] en <html>.
+   Cada tema sobrescribe las clases de Tailwind más usadas en el dashboard.
+   =========================================================================== */
+
 :root {
   color-scheme: light;
+  --bg-page: #f3f4f6;
+  --bg-surface: #ffffff;
+  --bg-surface-2: #f9fafb;
+  --bg-surface-hover: #f3f4f6;
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #6b7280;
+  --accent: #10b981;
+  --accent-hover: #059669;
+  --danger: #dc2626;
 }
 
 html,
@@ -10,8 +28,308 @@ body {
 }
 
 body {
-  background-color: #f3f4f6;
-  color: #0f172a;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+  background-color: var(--bg-page);
+  color: var(--text-primary);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
+}
+
+/* ---------- TEMA: dark ---------- */
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-page: #0f172a;
+  --bg-surface: #1e293b;
+  --bg-surface-2: #334155;
+  --bg-surface-hover: #334155;
+  --border: #334155;
+  --border-strong: #475569;
+  --text-primary: #f1f5f9;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --accent: #10b981;
+  --accent-hover: #059669;
+  --danger: #f87171;
+}
+
+/* ---------- TEMA: blue (azul clarito) ---------- */
+html[data-theme="blue"] {
+  color-scheme: light;
+  --bg-page: #eff6ff;
+  --bg-surface: #ffffff;
+  --bg-surface-2: #dbeafe;
+  --bg-surface-hover: #dbeafe;
+  --border: #bfdbfe;
+  --border-strong: #93c5fd;
+  --text-primary: #1e3a8a;
+  --text-secondary: #1e40af;
+  --text-muted: #3b82f6;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --danger: #dc2626;
+}
+
+/* ---------- TEMA: pink (rosa clarito) ---------- */
+html[data-theme="pink"] {
+  color-scheme: light;
+  --bg-page: #fdf2f8;
+  --bg-surface: #ffffff;
+  --bg-surface-2: #fce7f3;
+  --bg-surface-hover: #fce7f3;
+  --border: #fbcfe8;
+  --border-strong: #f9a8d4;
+  --text-primary: #831843;
+  --text-secondary: #9d174d;
+  --text-muted: #be185d;
+  --accent: #ec4899;
+  --accent-hover: #db2777;
+  --danger: #dc2626;
+}
+
+/* ---------- TEMA: whatsapp (verde clásico WA) ---------- */
+html[data-theme="whatsapp"] {
+  color-scheme: light;
+  --bg-page: #ece5dd; /* fondo crema clásico de chat WA */
+  --bg-surface: #ffffff;
+  --bg-surface-2: #dcf8c6; /* burbuja verde claro WA */
+  --bg-surface-hover: #d9f0bf;
+  --border: #cfd8d2;
+  --border-strong: #128c7e;
+  --text-primary: #075e54; /* verde oscuro WA */
+  --text-secondary: #128c7e;
+  --text-muted: #54656f;
+  --accent: #25d366; /* verde brillante WA */
+  --accent-hover: #128c7e;
+  --danger: #dc2626;
+}
+
+/* ===========================================================================
+   Overrides de utility classes de Tailwind para que respeten el tema.
+   Usamos selectores que NO sean :root (light) — light usa los defaults de Tailwind.
+   =========================================================================== */
+
+html[data-theme="dark"] .bg-white,
+html[data-theme="blue"] .bg-white,
+html[data-theme="pink"] .bg-white,
+html[data-theme="whatsapp"] .bg-white {
+  background-color: var(--bg-surface) !important;
+}
+
+html[data-theme="dark"] .bg-gray-50,
+html[data-theme="dark"] .bg-gray-100,
+html[data-theme="blue"] .bg-gray-50,
+html[data-theme="blue"] .bg-gray-100,
+html[data-theme="pink"] .bg-gray-50,
+html[data-theme="pink"] .bg-gray-100,
+html[data-theme="whatsapp"] .bg-gray-50,
+html[data-theme="whatsapp"] .bg-gray-100 {
+  background-color: var(--bg-page) !important;
+}
+
+html[data-theme="dark"] .bg-gray-200,
+html[data-theme="blue"] .bg-gray-200,
+html[data-theme="pink"] .bg-gray-200,
+html[data-theme="whatsapp"] .bg-gray-200 {
+  background-color: var(--bg-surface-2) !important;
+}
+
+html[data-theme="dark"] .hover\:bg-gray-50:hover,
+html[data-theme="dark"] .hover\:bg-gray-100:hover,
+html[data-theme="blue"] .hover\:bg-gray-50:hover,
+html[data-theme="blue"] .hover\:bg-gray-100:hover,
+html[data-theme="pink"] .hover\:bg-gray-50:hover,
+html[data-theme="pink"] .hover\:bg-gray-100:hover,
+html[data-theme="whatsapp"] .hover\:bg-gray-50:hover,
+html[data-theme="whatsapp"] .hover\:bg-gray-100:hover {
+  background-color: var(--bg-surface-hover) !important;
+}
+
+html[data-theme="dark"] .border-gray-100,
+html[data-theme="dark"] .border-gray-200,
+html[data-theme="dark"] .border-gray-300,
+html[data-theme="blue"] .border-gray-100,
+html[data-theme="blue"] .border-gray-200,
+html[data-theme="blue"] .border-gray-300,
+html[data-theme="pink"] .border-gray-100,
+html[data-theme="pink"] .border-gray-200,
+html[data-theme="pink"] .border-gray-300,
+html[data-theme="whatsapp"] .border-gray-100,
+html[data-theme="whatsapp"] .border-gray-200,
+html[data-theme="whatsapp"] .border-gray-300 {
+  border-color: var(--border) !important;
+}
+
+/* Texto */
+html[data-theme="dark"] .text-slate-900,
+html[data-theme="dark"] .text-slate-800,
+html[data-theme="dark"] .text-gray-900,
+html[data-theme="blue"] .text-slate-900,
+html[data-theme="blue"] .text-slate-800,
+html[data-theme="blue"] .text-gray-900,
+html[data-theme="pink"] .text-slate-900,
+html[data-theme="pink"] .text-slate-800,
+html[data-theme="pink"] .text-gray-900,
+html[data-theme="whatsapp"] .text-slate-900,
+html[data-theme="whatsapp"] .text-slate-800,
+html[data-theme="whatsapp"] .text-gray-900 {
+  color: var(--text-primary) !important;
+}
+
+html[data-theme="dark"] .text-slate-700,
+html[data-theme="dark"] .text-slate-600,
+html[data-theme="dark"] .text-gray-700,
+html[data-theme="blue"] .text-slate-700,
+html[data-theme="blue"] .text-slate-600,
+html[data-theme="blue"] .text-gray-700,
+html[data-theme="pink"] .text-slate-700,
+html[data-theme="pink"] .text-slate-600,
+html[data-theme="pink"] .text-gray-700,
+html[data-theme="whatsapp"] .text-slate-700,
+html[data-theme="whatsapp"] .text-slate-600,
+html[data-theme="whatsapp"] .text-gray-700 {
+  color: var(--text-secondary) !important;
+}
+
+html[data-theme="dark"] .text-gray-500,
+html[data-theme="dark"] .text-gray-600,
+html[data-theme="dark"] .text-gray-400,
+html[data-theme="blue"] .text-gray-500,
+html[data-theme="blue"] .text-gray-600,
+html[data-theme="blue"] .text-gray-400,
+html[data-theme="pink"] .text-gray-500,
+html[data-theme="pink"] .text-gray-600,
+html[data-theme="pink"] .text-gray-400,
+html[data-theme="whatsapp"] .text-gray-500,
+html[data-theme="whatsapp"] .text-gray-600,
+html[data-theme="whatsapp"] .text-gray-400 {
+  color: var(--text-muted) !important;
+}
+
+/* Inputs en dark mode necesitan fondo más oscuro */
+html[data-theme="dark"] input,
+html[data-theme="dark"] textarea,
+html[data-theme="dark"] select {
+  background-color: var(--bg-surface-2);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+
+html[data-theme="dark"] input::placeholder,
+html[data-theme="dark"] textarea::placeholder {
+  color: var(--text-muted);
+}
+
+/* ===========================================================================
+   Dark mode: fondos pastel (selected / accent) — usar tintas translúcidas
+   sobre la superficie oscura, manteniendo el color del texto legible.
+   =========================================================================== */
+
+/* Azul (seleccionado, info) */
+html[data-theme="dark"] .bg-blue-50,
+html[data-theme="dark"] .bg-blue-100 {
+  background-color: rgba(59, 130, 246, 0.18) !important;
+}
+html[data-theme="dark"] .text-blue-700,
+html[data-theme="dark"] .text-blue-800 {
+  color: #93c5fd !important;
+}
+html[data-theme="dark"] .border-blue-200 {
+  border-color: rgba(59, 130, 246, 0.4) !important;
+}
+html[data-theme="dark"] .hover\:bg-blue-100:hover {
+  background-color: rgba(59, 130, 246, 0.28) !important;
+}
+
+/* Verde / Emerald (activo, conectado) */
+html[data-theme="dark"] .bg-emerald-50,
+html[data-theme="dark"] .bg-emerald-100,
+html[data-theme="dark"] .bg-green-50,
+html[data-theme="dark"] .bg-green-100 {
+  background-color: rgba(16, 185, 129, 0.18) !important;
+}
+html[data-theme="dark"] .text-emerald-700,
+html[data-theme="dark"] .text-emerald-800,
+html[data-theme="dark"] .text-green-700,
+html[data-theme="dark"] .text-green-800 {
+  color: #6ee7b7 !important;
+}
+html[data-theme="dark"] .border-emerald-200,
+html[data-theme="dark"] .border-emerald-300,
+html[data-theme="dark"] .border-green-200 {
+  border-color: rgba(16, 185, 129, 0.4) !important;
+}
+html[data-theme="dark"] .hover\:bg-emerald-100:hover,
+html[data-theme="dark"] .hover\:bg-emerald-200:hover {
+  background-color: rgba(16, 185, 129, 0.28) !important;
+}
+
+/* Amarillo (pendiente) */
+html[data-theme="dark"] .bg-yellow-50,
+html[data-theme="dark"] .bg-yellow-100 {
+  background-color: rgba(234, 179, 8, 0.2) !important;
+}
+html[data-theme="dark"] .text-yellow-700,
+html[data-theme="dark"] .text-yellow-800 {
+  color: #fde047 !important;
+}
+html[data-theme="dark"] .border-yellow-200 {
+  border-color: rgba(234, 179, 8, 0.4) !important;
+}
+
+/* Naranja (en camino) */
+html[data-theme="dark"] .bg-orange-50,
+html[data-theme="dark"] .bg-orange-100 {
+  background-color: rgba(249, 115, 22, 0.2) !important;
+}
+html[data-theme="dark"] .text-orange-700,
+html[data-theme="dark"] .text-orange-800 {
+  color: #fdba74 !important;
+}
+html[data-theme="dark"] .border-orange-200 {
+  border-color: rgba(249, 115, 22, 0.4) !important;
+}
+
+/* Púrpura (preparando) */
+html[data-theme="dark"] .bg-purple-50,
+html[data-theme="dark"] .bg-purple-100 {
+  background-color: rgba(168, 85, 247, 0.2) !important;
+}
+html[data-theme="dark"] .text-purple-700,
+html[data-theme="dark"] .text-purple-800 {
+  color: #d8b4fe !important;
+}
+html[data-theme="dark"] .border-purple-200 {
+  border-color: rgba(168, 85, 247, 0.4) !important;
+}
+
+/* Rojo (cancelado, error) */
+html[data-theme="dark"] .bg-red-50,
+html[data-theme="dark"] .bg-red-100 {
+  background-color: rgba(239, 68, 68, 0.18) !important;
+}
+html[data-theme="dark"] .text-red-700,
+html[data-theme="dark"] .text-red-800,
+html[data-theme="dark"] .text-red-600 {
+  color: #fca5a5 !important;
+}
+html[data-theme="dark"] .border-red-200 {
+  border-color: rgba(239, 68, 68, 0.4) !important;
+}
+html[data-theme="dark"] .hover\:bg-red-100:hover {
+  background-color: rgba(239, 68, 68, 0.28) !important;
+}
+
+/* Botones primarios oscuros (slate-900) en dark: invertir para que destaquen */
+html[data-theme="dark"] .bg-slate-900 {
+  background-color: var(--accent) !important;
+  color: #ffffff !important;
+}
+html[data-theme="dark"] .bg-slate-900.text-white {
+  color: #ffffff !important;
 }

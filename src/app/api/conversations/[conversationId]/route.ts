@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { deleteConversation, getConversationById } from "@/lib/db";
+import { requireTenantId } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
 
@@ -8,18 +9,24 @@ interface Ctx {
 }
 
 export async function DELETE(_req: NextRequest, { params }: Ctx) {
-  const { conversationId } = await params;
-  const id = Number(conversationId);
-  if (!Number.isInteger(id) || id <= 0) {
-    return NextResponse.json({ error: "id inválido" }, { status: 400 });
+  try {
+    const { tenantId } = await requireTenantId();
+    const { conversationId } = await params;
+    const id = Number(conversationId);
+    if (!Number.isInteger(id) || id <= 0) {
+      return NextResponse.json({ error: "id inválido" }, { status: 400 });
+    }
+    const convo = getConversationById(id, tenantId);
+    if (!convo) {
+      return NextResponse.json(
+        { error: "conversación no existe" },
+        { status: 404 },
+      );
+    }
+    deleteConversation(tenantId, id);
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    if (e instanceof Response) return e;
+    throw e;
   }
-  const convo = getConversationById(id);
-  if (!convo) {
-    return NextResponse.json(
-      { error: "conversación no existe" },
-      { status: 404 },
-    );
-  }
-  deleteConversation(id);
-  return NextResponse.json({ ok: true });
 }

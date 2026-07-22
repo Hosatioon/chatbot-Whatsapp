@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { SessionProviderWrapper } from "@/components/SessionProviderWrapper";
 
 export const metadata: Metadata = {
-  title: "Agente WhatsApp",
-  description: "Dashboard local para agente de WhatsApp con IA",
+  title: "OrdiFast",
+  description: "Atención al cliente automatizada por WhatsApp",
 };
 
 export default function RootLayout({
@@ -13,8 +14,8 @@ export default function RootLayout({
 }) {
   return (
     <html lang="es">
-      <body className="min-h-screen bg-gray-100 text-slate-900 antialiased">
-        {children}
+      <body className="min-h-screen antialiased">
+        <SessionProviderWrapper>{children}</SessionProviderWrapper>
       </body>
     </html>
   );
