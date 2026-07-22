@@ -9,54 +9,106 @@ import fs from "node:fs";
 import {
   startBaileys,
   shutdownBaileys,
-  getHandle,
+  shutdownTenant,
+  listActiveTenants,
 } from "../src/lib/baileys/client";
-import { setConnectionState } from "../src/lib/db";
+import { listTenants, setConnectionState } from "../src/lib/db";
 
-const RESTART_FLAG = path.resolve(process.cwd(), "data", ".restart");
-const AUTH_DIR = path.resolve(process.cwd(), "auth");
+const DATA_DIR = path.resolve(process.cwd(), "data");
+const AUTH_ROOT = path.resolve(process.cwd(), "auth");
 
 let shuttingDown = false;
 
-async function reset(): Promise<void> {
-  console.log("[bot] Reset solicitado desde el dashboard");
+async function resetTenant(tenantId: number): Promise<void> {
+  console.log(`[bot:${tenantId}] Reset solicitado desde el dashboard`);
   try {
-    await shutdownBaileys();
+    await shutdownTenant(tenantId);
   } catch (err) {
-    console.warn("[bot] Error en shutdown:", err);
+    console.warn(`[bot:${tenantId}] Error en shutdown:`, err);
   }
+  const authDir = path.join(AUTH_ROOT, String(tenantId));
   try {
-    fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+    fs.rmSync(authDir, { recursive: true, force: true });
   } catch (err) {
-    console.warn("[bot] No se pudo borrar auth/:", err);
+    console.warn(`[bot:${tenantId}] No se pudo borrar auth/${tenantId}/:`, err);
   }
-  setConnectionState({
+  setConnectionState(tenantId, {
     status: "disconnected",
     qr_string: null,
     phone: null,
   });
-  console.log("[bot] Reiniciando socket limpio...");
-  await startBaileys();
+  console.log(`[bot:${tenantId}] Reiniciando socket limpio...`);
+  await startBaileys(tenantId);
+}
+
+async function startAllTenants(): Promise<void> {
+  const all = listTenants();
+  const existingIds = new Set(all.map((t) => t.id));
+  const active = new Set(listActiveTenants());
+
+  // 1. Apagar tenants que ya no existen en la DB (evita memory leak)
+  for (const activeId of active) {
+    if (!existingIds.has(activeId)) {
+      console.log(
+        `[bot:${activeId}] Tenant eliminado de la DB. Apagando socket...`,
+      );
+      try {
+        await shutdownTenant(activeId);
+      } catch (err) {
+        console.warn(`[bot:${activeId}] Error apagando tenant borrado:`, err);
+      }
+    }
+  }
+
+  // 2. Iniciar tenants nuevos
+  for (const t of all) {
+    if (active.has(t.id)) continue;
+    try {
+      console.log(
+        `[bot:${t.id}] Iniciando para tenant "${t.name}" (${t.slug})...`,
+      );
+      await startBaileys(t.id);
+    } catch (err) {
+      console.error(`[bot:${t.id}] Error iniciando:`, err);
+    }
+  }
 }
 
 async function main(): Promise<void> {
-  console.log("[bot] Iniciando agente WhatsApp...");
-  await startBaileys();
+  console.log("[bot] Iniciando agente WhatsApp multi-tenant...");
+  await startAllTenants();
 
-  // Watcher del flag de reset
+  // Watcher: archivos `.restart-<tenantId>` en data/ -> reset de ese tenant.
+  // También periódicamente arrancamos tenants nuevos creados desde el dashboard.
   setInterval(() => {
     if (shuttingDown) return;
-    if (fs.existsSync(RESTART_FLAG)) {
-      try {
-        fs.unlinkSync(RESTART_FLAG);
-      } catch {
-        /* ignore */
+
+    // 1. Reset por tenant
+    try {
+      const entries = fs.readdirSync(DATA_DIR);
+      for (const name of entries) {
+        const m = /^\.restart-(\d+)$/.exec(name);
+        if (!m) continue;
+        const tenantId = Number(m[1]);
+        const flagPath = path.join(DATA_DIR, name);
+        try {
+          fs.unlinkSync(flagPath);
+        } catch {
+          /* ignore */
+        }
+        void resetTenant(tenantId).catch((err) =>
+          console.error(`[bot:${tenantId}] Error en reset:`, err),
+        );
       }
-      void reset().catch((err) =>
-        console.error("[bot] Error en reset:", err),
-      );
+    } catch {
+      /* data dir no existe aún */
     }
-  }, 1000);
+
+    // 2. Arrancar tenants nuevos
+    void startAllTenants().catch((err) =>
+      console.error("[bot] Error en startAllTenants:", err),
+    );
+  }, 2000);
 }
 
 async function gracefulExit(signal: string): Promise<void> {
@@ -76,11 +128,5 @@ process.on("SIGTERM", () => void gracefulExit("SIGTERM"));
 
 main().catch((err) => {
   console.error("[bot] Error fatal:", err);
-  // Si el handle quedó vivo, intentar cerrarlo
-  const h = getHandle();
-  if (h) {
-    h.shutdown().finally(() => process.exit(1));
-  } else {
-    process.exit(1);
-  }
+  void shutdownBaileys().finally(() => process.exit(1));
 });
