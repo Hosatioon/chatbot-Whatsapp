@@ -1,6 +1,10 @@
 /**
  * Interfaz común para adaptadores de base de datos.
  * Permite swapping entre SQLite (desarrollo local) y PostgreSQL (producción).
+ *
+ * Todos los métodos son async porque PostgreSQL es inherentemente async.
+ * El adaptador SQLite puede envolver sus resultados en Promise.resolve()
+ * para satisfacer la interfaz.
  */
 import type {
   User,
@@ -12,7 +16,6 @@ import type {
   Message,
   Role,
   ConnectionState,
-  ConnectionStatus,
   OutboxItem,
   Product,
   ProductVariant,
@@ -26,6 +29,8 @@ import type {
   Mode,
   SetConnectionStateInput,
   CreateOrderItemInput,
+  LLMUsageRecord,
+  LLMBudgetStatus,
 } from "./db";
 
 export interface DBAdapter {
@@ -35,25 +40,45 @@ export interface DBAdapter {
     phone: string,
     name?: string | null,
     jid?: string | null,
-  ): Conversation;
-  getConversationById(id: number, tenantId?: number): Conversation | null;
-  listConversations(tenantId: number): ConversationListItem[];
-  setMode(tenantId: number, conversationId: number, mode: Mode): void;
-  deleteConversation(tenantId: number, conversationId: number): void;
+  ): Promise<Conversation>;
+  getConversationById(
+    id: number,
+    tenantId?: number,
+  ): Promise<Conversation | null>;
+  listConversations(tenantId: number): Promise<ConversationListItem[]>;
+  setMode(
+    tenantId: number,
+    conversationId: number,
+    mode: Mode,
+  ): Promise<void>;
+  deleteConversation(
+    tenantId: number,
+    conversationId: number,
+  ): Promise<void>;
 
   // ============ Messages ============
-  insertMessage(conversationId: number, role: Role, content: string): number;
+  insertMessage(
+    conversationId: number,
+    role: Role,
+    content: string,
+  ): Promise<number>;
   getMessages(
     tenantId: number,
     conversationId: number,
     limit?: number,
-  ): Message[];
-  getRecentHistory(conversationId: number, limit?: number): Message[];
+  ): Promise<Message[]>;
+  getRecentHistory(
+    conversationId: number,
+    limit?: number,
+  ): Promise<Message[]>;
 
   // ============ Connection State ============
-  getConnectionState(tenantId: number): ConnectionState;
-  listConnectionStates(): ConnectionState[];
-  setConnectionState(tenantId: number, input: SetConnectionStateInput): void;
+  getConnectionState(tenantId: number): Promise<ConnectionState>;
+  listConnectionStates(): Promise<ConnectionState[]>;
+  setConnectionState(
+    tenantId: number,
+    input: SetConnectionStateInput,
+  ): Promise<void>;
 
   // ============ Outbox ============
   enqueueOutbox(
@@ -62,14 +87,14 @@ export interface DBAdapter {
     phone: string,
     content: string,
     remoteJid?: string | null,
-  ): number;
-  getPendingOutbox(tenantId: number, limit?: number): OutboxItem[];
-  markOutboxSent(id: number): void;
+  ): Promise<number>;
+  getPendingOutbox(tenantId: number, limit?: number): Promise<OutboxItem[]>;
+  markOutboxSent(id: number): Promise<void>;
 
   // ============ Products ============
-  listProducts(tenantId: number): Product[];
-  getActiveProducts(tenantId: number): Product[];
-  getProductById(id: number, tenantId?: number): Product | null;
+  listProducts(tenantId: number): Promise<Product[]>;
+  getActiveProducts(tenantId: number): Promise<Product[]>;
+  getProductById(id: number, tenantId?: number): Promise<Product | null>;
   createProduct(
     tenantId: number,
     name: string,
@@ -77,7 +102,7 @@ export interface DBAdapter {
     stock: number,
     description?: string | null,
     variants?: ProductVariant[] | null,
-  ): Product;
+  ): Promise<Product>;
   updateProduct(
     tenantId: number,
     id: number,
@@ -86,55 +111,59 @@ export interface DBAdapter {
     stock: number,
     description?: string | null,
     variants?: ProductVariant[] | null,
-  ): void;
-  deleteProduct(tenantId: number, id: number): void;
-  toggleProductActive(tenantId: number, id: number, active: boolean): void;
-  listAllProducts(): (Product & { tenant_name: string })[];
+  ): Promise<void>;
+  deleteProduct(tenantId: number, id: number): Promise<void>;
+  toggleProductActive(
+    tenantId: number,
+    id: number,
+    active: boolean,
+  ): Promise<void>;
+  listAllProducts(): Promise<(Product & { tenant_name: string })[]>;
 
   // ============ Tenants ============
-  listTenants(): Tenant[];
-  getTenantById(id: number): Tenant | null;
-  getTenantBySlug(slug: string): Tenant | null;
-  createTenant(name: string, slug: string): Tenant;
-  setTenantTheme(tenantId: number, theme: TenantTheme): void;
-  getTenantTheme(tenantId: number): TenantTheme;
+  listTenants(): Promise<Tenant[]>;
+  getTenantById(id: number): Promise<Tenant | null>;
+  getTenantBySlug(slug: string): Promise<Tenant | null>;
+  createTenant(name: string, slug: string): Promise<Tenant>;
+  setTenantTheme(tenantId: number, theme: TenantTheme): Promise<void>;
+  getTenantTheme(tenantId: number): Promise<TenantTheme>;
 
   // ============ Users ============
-  getUserByEmail(email: string): User | null;
-  getUserById(id: number): User | null;
+  getUserByEmail(email: string): Promise<User | null>;
+  getUserById(id: number): Promise<User | null>;
   createUser(
     email: string,
     passwordHash: string,
     name: string,
     role?: UserRole,
     tenantId?: number,
-  ): User;
-  hasAnyUser(): boolean;
-  getUsersByTenant(tenantId: number): User[];
-  setSuperAdmin(userId: number, value: boolean): void;
+  ): Promise<User>;
+  hasAnyUser(): Promise<boolean>;
+  getUsersByTenant(tenantId: number): Promise<User[]>;
+  setSuperAdmin(userId: number, value: boolean): Promise<void>;
 
   // ============ Rate Limiting ============
   recordMessageEvent(
     tenantId: number,
     phone: string,
     contentHash: string,
-  ): void;
+  ): Promise<void>;
   countMessagesInWindow(
     tenantId: number,
     phone: string,
     windowSeconds: number,
-  ): number;
+  ): Promise<number>;
   countDuplicateContentInWindow(
     tenantId: number,
     phone: string,
     contentHash: string,
     windowSeconds: number,
-  ): number;
-  purgeOldMessageEvents(olderThanSeconds?: number): void;
+  ): Promise<number>;
+  purgeOldMessageEvents(olderThanSeconds?: number): Promise<void>;
 
   // ============ Plans & Usage ============
-  listPlans(): Plan[];
-  getPlanBySlug(slug: string): Plan | null;
+  listPlans(): Promise<Plan[]>;
+  getPlanBySlug(slug: string): Promise<Plan | null>;
   createPlan(
     name: string,
     slug: string,
@@ -142,58 +171,73 @@ export interface DBAdapter {
     priceCop: number,
     priceUsd: number,
     description: string | null,
-  ): Plan;
-  getTenantPlan(tenantId: number):
+  ): Promise<Plan>;
+  getTenantPlan(
+    tenantId: number,
+  ): Promise<
     | (TenantPlan & {
         plan_slug: string;
         plan_name: string;
         daily_chat_limit: number;
       })
-    | null;
+    | null
+  >;
   setTenantPlan(
     tenantId: number,
     planId: number,
     status: "active" | "suspended" | "cancelled" | "trial",
     nextBillingDate: number | null,
     trialEndDate?: number | null,
-  ): void;
-  getDailyUsage(tenantId: number, date: string): TenantDailyUsage | null;
+  ): Promise<void>;
+  getDailyUsage(
+    tenantId: number,
+    date: string,
+  ): Promise<TenantDailyUsage | null>;
   incrementDailyUsage(
     tenantId: number,
     date: string,
     newConversation?: boolean,
     messages?: number,
-  ): void;
-  resetDailyUsage(tenantId: number, date: string): void;
-  hasExceededDailyLimit(tenantId: number): boolean;
+  ): Promise<void>;
+  resetDailyUsage(tenantId: number, date: string): Promise<void>;
+  hasExceededDailyLimit(tenantId: number): Promise<boolean>;
+
+  // ============ LLM Usage ============
+  recordLLMUsage(rec: LLMUsageRecord): Promise<void>;
+  getLLMBudgetStatus(tenantId: number): Promise<LLMBudgetStatus>;
 
   // ============ Orders ============
-  createOrder(input: CreateOrderInput): Order & { items: OrderItem[] };
+  createOrder(
+    input: CreateOrderInput,
+  ): Promise<Order & { items: OrderItem[] }>;
   getOrdersByTenant(
     tenantId: number,
     limit?: number,
-  ): (Order & { item_count: number })[];
+  ): Promise<(Order & { item_count: number })[]>;
   getOrderById(
     tenantId: number,
     orderId: number,
-  ): (Order & { items: OrderItem[] }) | null;
+  ): Promise<(Order & { items: OrderItem[] }) | null>;
   updateOrderStatus(
     tenantId: number,
     orderId: number,
     status: OrderStatus,
-  ): boolean;
+  ): Promise<boolean>;
   getOrdersByStatus(
     tenantId: number,
     status: OrderStatus,
     limit?: number,
-  ): (Order & { item_count: number })[];
+  ): Promise<(Order & { item_count: number })[]>;
 
   // ============ Admin (unscoped) ============
-  listAllConversations(): (ConversationListItem & { tenant_name: string })[];
+  listAllConversations(): Promise<
+    (ConversationListItem & { tenant_name: string })[]
+  >;
 
   // ============ Utility ============
   close(): void;
   transaction<T>(fn: () => T): T;
+  transactionAsync<T>(fn: () => Promise<T>): Promise<T>;
 }
 
 export type { CreateOrderInput, CreateOrderItemInput };
