@@ -9,3 +9,9 @@ dist
 .env.*.local
 data/
 auth/
+*.backup
+*.tsbuildinfo
+bot-service/node_modules
+bot-service/dist
+bot-service/data
+bot-service/auth
