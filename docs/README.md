@@ -10,6 +10,7 @@ Bienvenido a la documentación interna del bot de WhatsApp multi-tenant.
 - [USERS_AND_ROLES.md](./USERS_AND_ROLES.md) — Roles del sistema (super-admin, ADMIN, OPERATOR, VIEWER).
 - [PRICING.md](./PRICING.md) — Planes de pago implementados en la base de datos.
 - [FORECAST.md](./FORECAST.md) — Proyección financiera a 12 meses y análisis Baileys vs WABA.
+- [OPERATING_MODEL.md](./OPERATING_MODEL.md) — Flujo operativo, seguridad, aislamiento y escalabilidad del producto.
 
 ## Flujos principales
 

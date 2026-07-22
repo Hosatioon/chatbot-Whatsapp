@@ -16,13 +16,15 @@ RUN npm ci
 # Copiar el resto del código
 COPY . .
 
+# Crear directorios para volúmenes persistentes (necesario antes del build para SQLite)
+RUN mkdir -p data auth
+
 # Build de Next.js (necesita env vars en build time si se usan en el frontend)
 # Se pueden inyectar vía --build-arg o .env.local
+ENV NEXT_PHASE=phase-production-build
 RUN npm run build
-
-# Crear directorios para volúmenes persistentes
-RUN mkdir -p data auth
+ENV NEXT_PHASE=
 
 EXPOSE 3000
 
-CMD ["npm", "run", "start:all"]
+CMD ["npm", "run", "start"]

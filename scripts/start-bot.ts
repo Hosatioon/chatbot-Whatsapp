@@ -13,6 +13,7 @@ import {
   listActiveTenants,
 } from "../src/lib/baileys/client";
 import { listTenants, setConnectionState } from "../src/lib/db";
+import { runBackupCycle } from "./backup";
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const AUTH_ROOT = path.resolve(process.cwd(), "auth");
@@ -76,6 +77,31 @@ async function startAllTenants(): Promise<void> {
 
 async function main(): Promise<void> {
   console.log("[bot] Iniciando agente WhatsApp multi-tenant...");
+
+  // Backup inicial al arrancar
+  try {
+    runBackupCycle();
+  } catch (err) {
+    console.warn("[bot] Error en backup inicial:", err);
+  }
+
+  // Backup cada 6 horas
+  const BACKUP_INTERVAL_MS = parseInt(
+    process.env.BACKUP_INTERVAL_HOURS || "6",
+    10,
+  ) * 60 * 60 * 1000;
+  setInterval(() => {
+    if (shuttingDown) return;
+    try {
+      runBackupCycle();
+    } catch (err) {
+      console.warn("[bot] Error en backup programado:", err);
+    }
+  }, BACKUP_INTERVAL_MS);
+  console.log(
+    `[bot] Backups automáticos cada ${process.env.BACKUP_INTERVAL_HOURS || "6"}h`,
+  );
+
   await startAllTenants();
 
   // Watcher: archivos `.restart-<tenantId>` en data/ -> reset de ese tenant.
