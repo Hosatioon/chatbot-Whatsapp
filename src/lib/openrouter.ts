@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { SYSTEM_PROMPT } from "./system-prompt";
+import { buildSystemPromptForTenant } from "./system-prompt";
 import { getActiveProducts } from "./db";
 import type { Message } from "./db";
 
@@ -43,6 +43,7 @@ function mapHistory(
 }
 
 function buildSystemPrompt(tenantId: number): string {
+  const basePrompt = buildSystemPromptForTenant(tenantId);
   const products = getActiveProducts(tenantId);
   let catalog = "";
   if (products.length > 0) {
@@ -56,7 +57,7 @@ function buildSystemPrompt(tenantId: number): string {
     }
     catalog += "\nUsá estos precios exactos. No inventes otros.\n";
   }
-  return SYSTEM_PROMPT + catalog;
+  return basePrompt + catalog;
 }
 
 // Interfaz para respuesta estructurada del LLM
@@ -72,55 +73,102 @@ export interface LLMResponse {
   };
 }
 
+export interface LLMUsage {
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  costUsd: number;
+  durationMs: number;
+}
+
+const MAX_TOKENS = parseInt(process.env.LLM_MAX_TOKENS || "350", 10);
+
+const MODEL_PRICING: Record<string, { input: number; output: number }> = {
+  "openai/gpt-4o-mini": { input: 0.15, output: 0.6 },
+  "google/gemini-2.0-flash-001": { input: 0.1, output: 0.4 },
+  "meta-llama/llama-3.3-70b-instruct:free": { input: 0, output: 0 },
+  "google/gemma-2-9b-it:free": { input: 0, output: 0 },
+};
+
+function estimateCost(
+  modelName: string,
+  promptTokens: number,
+  completionTokens: number,
+): number {
+  const pricing = MODEL_PRICING[modelName];
+  if (!pricing) return 0;
+  return (
+    (promptTokens / 1_000_000) * pricing.input +
+    (completionTokens / 1_000_000) * pricing.output
+  );
+}
+
 export async function generateReply(
   history: Message[],
   tenantId: number,
-): Promise<LLMResponse> {
+): Promise<{ response: LLMResponse; usage: LLMUsage }> {
   const messages: { role: "system" | "user" | "assistant"; content: string }[] =
     [
       { role: "system", content: buildSystemPrompt(tenantId) },
       ...mapHistory(history),
     ];
 
+  const t0 = Date.now();
   const completion = await client.chat.completions.create({
     model,
     messages,
     temperature: 0.7,
+    max_tokens: MAX_TOKENS,
     response_format: {
       type: "json_object",
     },
   });
+  const durationMs = Date.now() - t0;
+
+  const promptTokens = completion.usage?.prompt_tokens ?? 0;
+  const completionTokens = completion.usage?.completion_tokens ?? 0;
+  const totalTokens = completion.usage?.total_tokens ?? 0;
+  const costUsd = estimateCost(model, promptTokens, completionTokens);
 
   const reply = completion.choices[0]?.message?.content?.trim();
   if (!reply) {
     throw new Error("LLM devolvió respuesta vacía");
   }
 
+  let parsed: LLMResponse;
   try {
-    const parsed = JSON.parse(reply) as LLMResponse;
+    parsed = JSON.parse(reply) as LLMResponse;
 
-    // Validar estructura mínima
     if (!parsed.intent || !parsed.reply) {
       throw new Error("Respuesta JSON inválida: falta intent o reply");
     }
 
-    // Validar que si es create_order, tenga items
     if (
       parsed.intent === "create_order" &&
       (!parsed.order_data?.items || parsed.order_data.items.length === 0)
     ) {
       throw new Error("Respuesta JSON inválida: create_order requiere items");
     }
-
-    return parsed;
   } catch (error) {
     console.error("Error parsing LLM JSON response:", error);
     console.error("Raw response:", reply);
 
-    // Fallback: tratar como respuesta simple de chat
-    return {
+    parsed = {
       intent: "chat",
       reply: reply,
     };
   }
+
+  return {
+    response: parsed,
+    usage: {
+      model,
+      promptTokens,
+      completionTokens,
+      totalTokens,
+      costUsd,
+      durationMs,
+    },
+  };
 }

@@ -9,6 +9,8 @@ import {
   purgeOldMessageEvents,
   hasExceededDailyLimit,
   incrementDailyUsage,
+  getLLMBudgetStatus,
+  recordLLMUsage,
 } from "../db";
 import { generateReply, type LLMResponse } from "../openrouter";
 import { createOrder } from "../events";
@@ -149,17 +151,73 @@ async function handleSingleMessage(
     return;
   }
 
-  const history = getRecentHistory(convo.id, 20);
+  const history = getRecentHistory(convo.id, 15);
+
+  // Verificar presupuesto de IA antes de llamar al LLM
+  const budget = getLLMBudgetStatus(tenantId);
+  if (budget.exceeded) {
+    console.warn(`[bot:${tenantId}] Presupuesto IA excedido: ${budget.reason}`);
+    const budgetMsg =
+      "En este momento te atenderá una persona del equipo. ¡Gracias por tu paciencia!";
+    insertMessage(convo.id, "assistant", budgetMsg);
+    try {
+      await sock.sendMessage(remoteJid, { text: budgetMsg });
+    } catch (e) {
+      console.error("[bot] Error enviando mensaje de presupuesto:", e);
+    }
+    return;
+  }
+
   console.log(`[bot] llamando LLM con ${history.length} mensajes...`);
   const t0 = Date.now();
   let llmResponse: LLMResponse;
+  let usage: { model: string; promptTokens: number; completionTokens: number; totalTokens: number; costUsd: number; durationMs: number } | null = null;
   try {
-    llmResponse = await generateReply(history, tenantId);
+    const result = await generateReply(history, tenantId);
+    llmResponse = result.response;
+    usage = result.usage;
   } catch (err) {
     console.error("[bot] Error llamando al LLM:", err);
+    recordLLMUsage({
+      tenant_id: tenantId,
+      model: process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini",
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      cost_usd: 0,
+      duration_ms: Date.now() - t0,
+      success: false,
+      error_message: (err as Error).message?.slice(0, 500) ?? String(err),
+    });
+
+    const fallbackMsg =
+      "Ups, tuve un problema procesando tu mensaje. ¿Me lo puedes repetir de otra forma? O si prefieres, te conecto con una persona del equipo.";
+    insertMessage(convo.id, "assistant", fallbackMsg);
+    try {
+      await sock.sendMessage(remoteJid, { text: fallbackMsg });
+    } catch (e) {
+      console.error("[bot] Error enviando mensaje de fallback:", e);
+    }
     return;
   }
   console.log(`[bot] LLM respondió en ${Date.now() - t0}ms`);
+
+  // Registrar uso de tokens y costo
+  if (usage) {
+    recordLLMUsage({
+      tenant_id: tenantId,
+      model: usage.model,
+      prompt_tokens: usage.promptTokens,
+      completion_tokens: usage.completionTokens,
+      total_tokens: usage.totalTokens,
+      cost_usd: usage.costUsd,
+      duration_ms: usage.durationMs,
+      success: true,
+    });
+    console.log(
+      `[bot:${tenantId}] LLM usage: ${usage.totalTokens} tokens, $${usage.costUsd.toFixed(6)} USD, ${usage.durationMs}ms`,
+    );
+  }
 
   // Procesar intención del LLM
   if (llmResponse.intent === "create_order" && llmResponse.order_data) {

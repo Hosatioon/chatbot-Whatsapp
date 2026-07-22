@@ -88,6 +88,11 @@ export interface Tenant {
   name: string;
   slug: string;
   theme: TenantTheme;
+  business_name: string | null;
+  business_type: string | null;
+  payment_info: string | null;
+  custom_greeting: string | null;
+  custom_prompt: string | null;
   created_at: number;
 }
 
@@ -197,10 +202,19 @@ if (!fs.existsSync(dataDir)) {
 }
 
 const dbPath = path.join(dataDir, "messages.db");
-const db = new Database(dbPath);
 
-db.pragma("journal_mode = WAL");
-db.pragma("foreign_keys = ON");
+const isBuildPhase =
+  process.env.NEXT_PHASE === "phase-production-build" ||
+  !!process.env.NEXT_PRIVATE_BUILD_ID;
+
+let db: Database.Database;
+if (isBuildPhase) {
+  db = new Database(":memory:");
+} else {
+  db = new Database(dbPath);
+  db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS conversations (
@@ -436,6 +450,23 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_tenant_usage_date
     ON tenant_daily_usage(tenant_id, date);
+
+  CREATE TABLE IF NOT EXISTS llm_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    success INTEGER NOT NULL DEFAULT 1,
+    error_message TEXT,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_llm_usage_tenant_date
+    ON llm_usage(tenant_id, created_at);
 `);
 
 // Seed de planes por defecto (idempotente)
@@ -489,6 +520,21 @@ function hasColumn(table: string, column: string): boolean {
 
 if (!hasColumn("tenants", "theme")) {
   db.exec("ALTER TABLE tenants ADD COLUMN theme TEXT NOT NULL DEFAULT 'light'");
+}
+if (!hasColumn("tenants", "business_name")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN business_name TEXT");
+}
+if (!hasColumn("tenants", "business_type")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN business_type TEXT");
+}
+if (!hasColumn("tenants", "payment_info")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN payment_info TEXT");
+}
+if (!hasColumn("tenants", "custom_greeting")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN custom_greeting TEXT");
+}
+if (!hasColumn("tenants", "custom_prompt")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN custom_prompt TEXT");
 }
 if (!hasColumn("tenant_plans", "trial_end_date")) {
   db.exec("ALTER TABLE tenant_plans ADD COLUMN trial_end_date INTEGER");
@@ -1102,6 +1148,31 @@ export function setTenantTheme(tenantId: number, theme: TenantTheme): void {
   stmtUpdateTenantTheme.run(theme, tenantId);
 }
 
+export interface TenantConfig {
+  business_name: string | null;
+  business_type: string | null;
+  payment_info: string | null;
+  custom_greeting: string | null;
+  custom_prompt: string | null;
+}
+
+const stmtUpdateTenantConfig = db.prepare<
+  [string | null, string | null, string | null, string | null, string | null, number]
+>(
+  `UPDATE tenants SET business_name = ?, business_type = ?, payment_info = ?, custom_greeting = ?, custom_prompt = ? WHERE id = ?`,
+);
+
+export function updateTenantConfig(tenantId: number, config: TenantConfig): void {
+  stmtUpdateTenantConfig.run(
+    config.business_name || null,
+    config.business_type || null,
+    config.payment_info || null,
+    config.custom_greeting || null,
+    config.custom_prompt || null,
+    tenantId,
+  );
+}
+
 export function getTenantTheme(tenantId: number): TenantTheme {
   const t = getTenantById(tenantId);
   return t?.theme ?? "light";
@@ -1337,6 +1408,146 @@ export function isTrialExpired(
   if (!tp.trial_end_date) return false;
   const now = Math.floor(Date.now() / 1000);
   return now > tp.trial_end_date;
+}
+
+// ---------------------------------------------------------------------------
+// LLM Usage — registro de tokens y costo por llamada
+// ---------------------------------------------------------------------------
+
+export interface LLMUsageRecord {
+  tenant_id: number;
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  duration_ms: number;
+  success: boolean;
+  error_message?: string | null;
+}
+
+const stmtInsertLLMUsage = db.prepare<
+  [
+    number,
+    string,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    string | null,
+  ]
+>(
+  `INSERT INTO llm_usage (tenant_id, model, prompt_tokens, completion_tokens, total_tokens, cost_usd, duration_ms, success, error_message, created_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())`,
+);
+
+export function recordLLMUsage(rec: LLMUsageRecord): void {
+  stmtInsertLLMUsage.run(
+    rec.tenant_id,
+    rec.model,
+    rec.prompt_tokens,
+    rec.completion_tokens,
+    rec.total_tokens,
+    rec.cost_usd,
+    rec.duration_ms,
+    rec.success ? 1 : 0,
+    rec.error_message ?? null,
+  );
+}
+
+const stmtGetDailyLLMCost = db.prepare<
+  number,
+  { total_cost_usd: number; total_tokens: number; call_count: number }
+>(
+  `SELECT
+     COALESCE(SUM(cost_usd), 0) as total_cost_usd,
+     COALESCE(SUM(total_tokens), 0) as total_tokens,
+     COUNT(*) as call_count
+   FROM llm_usage
+   WHERE tenant_id = ? AND created_at >= unixepoch('now', 'start of day')`,
+);
+
+const stmtGetMonthlyLLMCost = db.prepare<
+  number,
+  { total_cost_usd: number; total_tokens: number; call_count: number }
+>(
+  `SELECT
+     COALESCE(SUM(cost_usd), 0) as total_cost_usd,
+     COALESCE(SUM(total_tokens), 0) as total_tokens,
+     COUNT(*) as call_count
+   FROM llm_usage
+   WHERE tenant_id = ? AND created_at >= unixepoch('now', 'start of month')`,
+);
+
+const stmtGetGlobalDailyLLMCost = db.prepare<
+  [],
+  { total_cost_usd: number; total_tokens: number; call_count: number }
+>(
+  `SELECT
+     COALESCE(SUM(cost_usd), 0) as total_cost_usd,
+     COALESCE(SUM(total_tokens), 0) as total_tokens,
+     COUNT(*) as call_count
+   FROM llm_usage
+   WHERE created_at >= unixepoch('now', 'start of day')`,
+);
+
+export interface LLMBudgetStatus {
+  dailyCostUsd: number;
+  monthlyCostUsd: number;
+  dailyTokens: number;
+  monthlyTokens: number;
+  dailyCalls: number;
+  monthlyCalls: number;
+  exceeded: boolean;
+  reason?: string;
+}
+
+const DEFAULT_DAILY_BUDGET_USD = parseFloat(
+  process.env.LLM_DAILY_BUDGET_USD || "1.0",
+);
+const DEFAULT_MONTHLY_BUDGET_USD = parseFloat(
+  process.env.LLM_MONTHLY_BUDGET_USD || "25.0",
+);
+const GLOBAL_DAILY_BUDGET_USD = parseFloat(
+  process.env.LLM_GLOBAL_DAILY_BUDGET_USD || "10.0",
+);
+
+export function getLLMBudgetStatus(tenantId: number): LLMBudgetStatus {
+  const daily = stmtGetDailyLLMCost.get(tenantId);
+  const monthly = stmtGetMonthlyLLMCost.get(tenantId);
+
+  const dailyCost = daily?.total_cost_usd ?? 0;
+  const monthlyCost = monthly?.total_cost_usd ?? 0;
+
+  let exceeded = false;
+  let reason: string | undefined;
+
+  if (dailyCost >= DEFAULT_DAILY_BUDGET_USD) {
+    exceeded = true;
+    reason = `Presupuesto diario de IA excedido ($${dailyCost.toFixed(4)} / $${DEFAULT_DAILY_BUDGET_USD.toFixed(2)} USD)`;
+  } else if (monthlyCost >= DEFAULT_MONTHLY_BUDGET_USD) {
+    exceeded = true;
+    reason = `Presupuesto mensual de IA excedido ($${monthlyCost.toFixed(4)} / $${DEFAULT_MONTHLY_BUDGET_USD.toFixed(2)} USD)`;
+  } else {
+    const global = stmtGetGlobalDailyLLMCost.get();
+    if ((global?.total_cost_usd ?? 0) >= GLOBAL_DAILY_BUDGET_USD) {
+      exceeded = true;
+      reason = `Presupuesto global de IA excedido ($${(global?.total_cost_usd ?? 0).toFixed(4)} / $${GLOBAL_DAILY_BUDGET_USD.toFixed(2)} USD)`;
+    }
+  }
+
+  return {
+    dailyCostUsd: dailyCost,
+    monthlyCostUsd: monthlyCost,
+    dailyTokens: daily?.total_tokens ?? 0,
+    monthlyTokens: monthly?.total_tokens ?? 0,
+    dailyCalls: daily?.call_count ?? 0,
+    monthlyCalls: monthly?.call_count ?? 0,
+    exceeded,
+    reason,
+  };
 }
 
 // ---------------------------------------------------------------------------
