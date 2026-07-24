@@ -5,6 +5,7 @@ export { getBotTenantId } from "./bot-tenant";
 export type AuthContext = {
   tenantId: number;
   userId: number;
+  email: string;
   role: "ADMIN" | "OPERATOR" | "VIEWER";
   isSuperAdmin: boolean;
 };
@@ -24,9 +25,27 @@ export async function requireTenantId(): Promise<AuthContext> {
   return {
     tenantId: session.user.tenantId,
     userId: Number(session.user.id),
+    email: session.user.email.toLowerCase(),
     role: session.user.role,
     isSuperAdmin: session.user.isSuperAdmin ?? false,
   };
+}
+
+/**
+ * Solo el propietario puede consultar costos, tokens y configuración interna de IA.
+ */
+export async function requireOwnerAdmin(): Promise<AuthContext> {
+  const ctx = await requireTenantId();
+  const ownerEmail = (process.env.SUPER_ADMIN_EMAIL || "hosatioon@gmail.com")
+    .trim()
+    .toLowerCase();
+  if (!ctx.isSuperAdmin || ctx.email !== ownerEmail) {
+    throw new Response(JSON.stringify({ error: "Forbidden" }), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  return ctx;
 }
 
 /**
@@ -45,6 +64,7 @@ export async function requireAuth(): Promise<
   return {
     tenantId: session.user.tenantId,
     userId: Number(session.user.id),
+    email: session.user.email.toLowerCase(),
     role: session.user.role,
     isSuperAdmin: session.user.isSuperAdmin ?? false,
   };

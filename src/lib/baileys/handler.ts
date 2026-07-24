@@ -151,7 +151,11 @@ async function handleSingleMessage(
     return;
   }
 
-  const history = getRecentHistory(convo.id, 15);
+  const historyLimit = Math.min(
+    Math.max(parseInt(process.env.LLM_HISTORY_MESSAGES || "10", 10) || 10, 4),
+    15,
+  );
+  const history = getRecentHistory(convo.id, historyLimit);
 
   // Verificar presupuesto de IA antes de llamar al LLM
   const budget = getLLMBudgetStatus(tenantId);

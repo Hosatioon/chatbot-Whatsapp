@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { listActiveTenants } from "@/lib/baileys/client";
 import { listTenants, getLLMBudgetStatus } from "@/lib/db";
-import { requireAuth } from "@/lib/tenant";
+import { requireOwnerAdmin } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
 
@@ -19,13 +19,9 @@ export async function GET(req: NextRequest) {
   // Modo 2: Super-admin autenticado obtiene métricas completas
   let ctx;
   try {
-    ctx = await requireAuth();
+    ctx = await requireOwnerAdmin();
   } catch (res) {
     return res as Response;
-  }
-
-  if (!ctx.isSuperAdmin) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const activeTenants = listActiveTenants();

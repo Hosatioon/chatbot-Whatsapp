@@ -91,16 +91,26 @@ const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   "google/gemma-2-9b-it:free": { input: 0, output: 0 },
 };
 
+const UNKNOWN_MODEL_PRICING = {
+  input: parseFloat(process.env.LLM_UNKNOWN_MODEL_INPUT_PRICE_USD_PER_MILLION || "1"),
+  output: parseFloat(process.env.LLM_UNKNOWN_MODEL_OUTPUT_PRICE_USD_PER_MILLION || "4"),
+};
+
 function estimateCost(
   modelName: string,
   promptTokens: number,
   completionTokens: number,
 ): number {
   const pricing = MODEL_PRICING[modelName];
-  if (!pricing) return 0;
+  if (!pricing) {
+    console.warn(
+      `[openrouter] Modelo sin tarifa conocida: ${modelName}. Usando tarifa conservadora de respaldo.`,
+    );
+  }
+  const effectivePricing = pricing ?? UNKNOWN_MODEL_PRICING;
   return (
-    (promptTokens / 1_000_000) * pricing.input +
-    (completionTokens / 1_000_000) * pricing.output
+    (promptTokens / 1_000_000) * effectivePricing.input +
+    (completionTokens / 1_000_000) * effectivePricing.output
   );
 }
 

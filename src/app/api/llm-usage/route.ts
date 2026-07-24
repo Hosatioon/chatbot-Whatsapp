@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getLLMBudgetStatus } from "@/lib/db";
-import { requireAuth } from "@/lib/tenant";
+import { requireOwnerAdmin } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   let ctx;
   try {
-    ctx = await requireAuth();
+    ctx = await requireOwnerAdmin();
   } catch (res) {
     return res as Response;
   }
