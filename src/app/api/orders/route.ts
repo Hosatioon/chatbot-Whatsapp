@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getOrdersByTenant } from "@/lib/db";
+import { getOrdersByTenant, searchOrders } from "@/lib/db";
 import { createOrder } from "@/lib/events";
 import { requireTenantId } from "@/lib/tenant";
-import type { CreateOrderInput } from "@/lib/db";
+import type { CreateOrderInput, OrderStatus } from "@/lib/db";
 
 // GET - Listar pedidos del tenant
 export async function GET(request: NextRequest) {
@@ -10,25 +10,43 @@ export async function GET(request: NextRequest) {
     const { tenantId } = await requireTenantId();
     const { searchParams } = new URL(request.url);
     const limit = Math.min(Number(searchParams.get("limit") || "50"), 100);
-    const status = searchParams.get("status");
+    const status = searchParams.get("status") || undefined;
+    const search = searchParams.get("search") || undefined;
+    const dateFrom = searchParams.get("dateFrom");
+    const dateTo = searchParams.get("dateTo");
 
+    // Si hay búsqueda o filtro de fecha, usar searchOrders
+    if (search || dateFrom || dateTo) {
+      const validStatuses: OrderStatus[] = [
+        "PENDING", "CONFIRMED", "PREPARING", "ON_THE_WAY", "DELIVERED", "CANCELLED",
+      ];
+      if (status && !validStatuses.includes(status as OrderStatus)) {
+        return NextResponse.json({ error: "Invalid status" }, { status: 400 });
+      }
+      const orders = searchOrders({
+        tenantId,
+        status: status as OrderStatus | undefined,
+        search,
+        dateFrom: dateFrom ? Number(dateFrom) : undefined,
+        dateTo: dateTo ? Number(dateTo) : undefined,
+        limit,
+      });
+      return NextResponse.json({ orders });
+    }
+
+    // Sin búsqueda: comportamiento original
     let orders;
     if (status) {
-      // Validar status
       const validStatuses = [
-        "PENDING",
-        "CONFIRMED",
-        "PREPARING",
-        "ON_THE_WAY",
-        "DELIVERED",
-        "CANCELLED",
+        "PENDING", "CONFIRMED", "PREPARING", "ON_THE_WAY", "DELIVERED", "CANCELLED",
       ];
       if (!validStatuses.includes(status)) {
         return NextResponse.json({ error: "Invalid status" }, { status: 400 });
       }
-      orders = await getOrdersByStatus(tenantId, status as any, limit);
+      const { getOrdersByStatus } = await import("@/lib/db");
+      orders = getOrdersByStatus(tenantId, status as any, limit);
     } else {
-      orders = await getOrdersByTenant(tenantId, limit);
+      orders = getOrdersByTenant(tenantId, limit);
     }
 
     return NextResponse.json({ orders });
@@ -105,6 +123,3 @@ export async function POST(request: NextRequest) {
     );
   }
 }
-
-// Import needed for getOrdersByStatus
-import { getOrdersByStatus } from "@/lib/db";

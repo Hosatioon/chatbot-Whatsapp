@@ -53,6 +53,11 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<{
+    open: boolean;
+    id: number | null;
+    name: string;
+  }>({ open: false, id: null, name: "" });
 
   const handleImport = async (file: File) => {
     setImporting(true);
@@ -150,18 +155,32 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
     }
   };
 
-  const handleDelete = async (id: number) => {
-    if (!window.confirm("¿Eliminar este producto?")) return;
+  const openDeleteModal = (id: number, name: string) => {
+    setDeleteConfirm({ open: true, id, name });
+  };
+
+  const closeDeleteModal = () => {
+    setDeleteConfirm({ open: false, id: null, name: "" });
+  };
+
+  const handleDelete = async () => {
+    const id = deleteConfirm.id;
+    if (!id) return;
     try {
       const tenantId = selectedTenantId > 0 ? selectedTenantId : undefined;
-      await fetch("/api/products", {
+      const res = await fetch("/api/products", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, tenantId }),
       });
+      if (!res.ok) {
+        console.error("Error eliminando producto:", await res.text());
+      }
       await fetchProducts();
     } catch (err) {
       console.error("Error eliminando producto:", err);
+    } finally {
+      closeDeleteModal();
     }
   };
 
@@ -502,7 +521,7 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
                         Editar
                       </button>
                       <button
-                        onClick={() => handleDelete(p.id)}
+                        onClick={() => openDeleteModal(p.id, p.name)}
                         className="rounded bg-red-50 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-100"
                       >
                         Eliminar
@@ -532,6 +551,34 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
         al bot de WhatsApp para que pueda informar precios y disponibilidad a
         los clientes.
       </div>
+
+      {/* Modal de confirmación de eliminación */}
+      {deleteConfirm.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-xl">
+            <h3 className="mb-2 text-lg font-semibold text-gray-900">
+              ¿Eliminar producto?
+            </h3>
+            <p className="mb-6 text-sm text-gray-600">
+              Estás por eliminar <strong>{deleteConfirm.name}</strong>. Esta acción no se puede deshacer.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={closeDeleteModal}
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleDelete}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+              >
+                Sí, eliminar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

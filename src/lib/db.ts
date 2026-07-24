@@ -70,6 +70,8 @@ export interface Order {
   status: OrderStatus;
   total_amount: number;
   notes: string | null;
+  cancel_reason: string | null;
+  deleted_at: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -336,7 +338,28 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_orders_tenant_status ON orders(tenant_id, status);
   CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
+
+  CREATE TABLE IF NOT EXISTS order_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL,
+    event TEXT NOT NULL,
+    description TEXT,
+    old_value TEXT,
+    new_value TEXT,
+    actor TEXT DEFAULT 'system',
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_order_history_order ON order_history(order_id, created_at);
 `);
+
+// Migración: cancel_reason en orders
+if (!columnExists("orders", "cancel_reason")) {
+  db.exec(`ALTER TABLE orders ADD COLUMN cancel_reason TEXT`);
+}
+if (!columnExists("orders", "deleted_at")) {
+  db.exec(`ALTER TABLE orders ADD COLUMN deleted_at INTEGER`);
+}
 
 // Migración idempotente: description en products
 if (!columnExists("products", "description")) {
@@ -601,6 +624,11 @@ if (hasUniqueConstraint("products")) {
 }
 
 export default db;
+
+// Migración: los productos importados con stock 0 quedaban inactivos
+// automáticamente. Ahora el estado activo/inactivo lo controla el usuario,
+// así que reactivamos los productos bloqueados por stock cero.
+db.exec(`UPDATE products SET active = 1 WHERE active = 0 AND stock = 0;`);
 
 // ---------------------------------------------------------------------------
 // Conversaciones
@@ -940,7 +968,6 @@ export function createProduct(
   description?: string | null,
   variants?: ProductVariant[] | null,
 ): Product {
-  const active = stock > 0 ? 1 : 0;
   const variantsJson =
     variants && variants.length > 0 ? JSON.stringify(variants) : null;
   const info = stmtInsertProduct.run(
@@ -948,7 +975,7 @@ export function createProduct(
     name,
     price,
     stock,
-    active,
+    1, // Activo por defecto; stock 0 no implica inactivo
     description ?? null,
     variantsJson,
   );
@@ -966,9 +993,14 @@ export function updateProduct(
   description?: string | null,
   variants?: ProductVariant[] | null,
 ): void {
-  const active = stock > 0 ? 1 : 0;
   const variantsJson =
     variants && variants.length > 0 ? JSON.stringify(variants) : null;
+
+  // Preservar el estado activo/inactivo actual. El usuario lo controla
+  // con toggleProductActive; stock 0 no desactiva automáticamente.
+  const current = getProductById(id, tenantId);
+  const active = current?.active ?? 1;
+
   stmtUpdateProduct.run(
     name,
     price,
@@ -1688,9 +1720,222 @@ export function updateOrderStatus(
   tenantId: number,
   orderId: number,
   status: OrderStatus,
+  cancelReason?: string,
 ): boolean {
+  const current = stmtGetOrderById.get(orderId, tenantId) as Order | undefined;
+  if (!current) return false;
+
   const result = stmtUpdateOrderStatus.run(status, orderId, tenantId);
+
+  if (result.changes > 0) {
+    // Registrar en historial
+    stmtInsertOrderHistory.run(
+      orderId,
+      "STATUS_CHANGE",
+      `Estado: ${current.status} → ${status}`,
+      current.status,
+      status,
+      "operator",
+    );
+
+    // Si se canceló, guardar motivo
+    if (status === "CANCELLED" && cancelReason) {
+      db.prepare("UPDATE orders SET cancel_reason = ? WHERE id = ? AND tenant_id = ?").run(
+        cancelReason, orderId, tenantId,
+      );
+      stmtInsertOrderHistory.run(
+        orderId,
+        "CANCEL_REASON",
+        `Motivo de cancelación: ${cancelReason}`,
+        null,
+        cancelReason,
+        "operator",
+      );
+    }
+  }
+
   return result.changes > 0;
+}
+
+// --- Order History ---
+
+export interface OrderHistoryEntry {
+  id: number;
+  order_id: number;
+  event: string;
+  description: string | null;
+  old_value: string | null;
+  new_value: string | null;
+  actor: string;
+  created_at: number;
+}
+
+const stmtInsertOrderHistory = db.prepare(`
+  INSERT INTO order_history (order_id, event, description, old_value, new_value, actor)
+  VALUES (?, ?, ?, ?, ?, ?)
+`);
+
+const stmtGetOrderHistory = db.prepare(`
+  SELECT * FROM order_history WHERE order_id = ? ORDER BY created_at ASC
+`);
+
+export function getOrderHistory(orderId: number): OrderHistoryEntry[] {
+  return stmtGetOrderHistory.all(orderId) as OrderHistoryEntry[];
+}
+
+// --- Delete Order (solo PENDIENTE) ---
+
+export function deleteOrder(tenantId: number, orderId: number): boolean {
+  const order = stmtGetOrderById.get(orderId, tenantId) as Order | undefined;
+  if (!order) return false;
+  if (order.status !== "PENDING") return false;
+
+  db.prepare("DELETE FROM order_items WHERE order_id = ?").run(orderId);
+  db.prepare("DELETE FROM order_history WHERE order_id = ?").run(orderId);
+  const result = db.prepare("DELETE FROM orders WHERE id = ? AND tenant_id = ?").run(orderId, tenantId);
+  return result.changes > 0;
+}
+
+// --- Update Order (con restricciones por estado) ---
+
+export interface UpdateOrderInput {
+  customer_name?: string | null;
+  customer_phone?: string;
+  notes?: string | null;
+  items?: { product_name: string; quantity: number; unit_price: number }[];
+}
+
+export function updateOrder(
+  tenantId: number,
+  orderId: number,
+  updates: UpdateOrderInput,
+): (Order & { items: OrderItem[] }) | null {
+  const order = stmtGetOrderById.get(orderId, tenantId) as Order | undefined;
+  if (!order) return null;
+
+  // Entregado: read-only
+  if (order.status === "DELIVERED") return null;
+
+  const allowedFields: Record<string, boolean> = {
+    customer_name: true,
+    customer_phone: true,
+    notes: true,
+    items: order.status === "PENDING" || order.status === "CONFIRMED",
+  };
+
+  const transaction = db.transaction(() => {
+    if (updates.customer_name !== undefined && allowedFields.customer_name) {
+      db.prepare("UPDATE orders SET customer_name = ?, updated_at = unixepoch() WHERE id = ? AND tenant_id = ?")
+        .run(updates.customer_name, orderId, tenantId);
+      stmtInsertOrderHistory.run(orderId, "FIELD_CHANGE", "Cliente actualizado", order.customer_name, updates.customer_name, "operator");
+    }
+
+    if (updates.customer_phone !== undefined && allowedFields.customer_phone) {
+      db.prepare("UPDATE orders SET customer_phone = ?, updated_at = unixepoch() WHERE id = ? AND tenant_id = ?")
+        .run(updates.customer_phone, orderId, tenantId);
+      stmtInsertOrderHistory.run(orderId, "FIELD_CHANGE", "Teléfono actualizado", order.customer_phone, updates.customer_phone, "operator");
+    }
+
+    if (updates.notes !== undefined && allowedFields.notes) {
+      db.prepare("UPDATE orders SET notes = ?, updated_at = unixepoch() WHERE id = ? AND tenant_id = ?")
+        .run(updates.notes, orderId, tenantId);
+      stmtInsertOrderHistory.run(orderId, "FIELD_CHANGE", "Notas actualizadas", order.notes, updates.notes, "operator");
+    }
+
+    if (updates.items && allowedFields.items) {
+      // Reemplazar items
+      db.prepare("DELETE FROM order_items WHERE order_id = ?").run(orderId);
+      let total = 0;
+      for (const item of updates.items) {
+        const totalPrice = item.quantity * item.unit_price;
+        total += totalPrice;
+        stmtInsertOrderItem.run(orderId, item.product_name, item.quantity, item.unit_price, totalPrice);
+      }
+      db.prepare("UPDATE orders SET total_amount = ?, updated_at = unixepoch() WHERE id = ? AND tenant_id = ?")
+        .run(total, orderId, tenantId);
+      stmtInsertOrderHistory.run(orderId, "ITEMS_CHANGE", "Productos actualizados", null, JSON.stringify(updates.items), "operator");
+    }
+  });
+
+  transaction();
+
+  const updated = stmtGetOrderById.get(orderId, tenantId) as Order | undefined;
+  if (!updated) return null;
+  const items = stmtGetOrderItems.all(orderId) as OrderItem[];
+  return { ...updated, items };
+}
+
+// --- Duplicate Order ---
+
+export function duplicateOrder(
+  tenantId: number,
+  orderId: number,
+): (Order & { items: OrderItem[] }) | null {
+  const original = getOrderById(tenantId, orderId);
+  if (!original) return null;
+
+  const input: CreateOrderInput = {
+    tenant_id: tenantId,
+    customer_phone: original.customer_phone,
+    customer_name: original.customer_name,
+    items: original.items.map((item) => ({
+      product_name: item.product_name,
+      quantity: item.quantity,
+      unit_price: item.unit_price,
+    })),
+    notes: original.notes,
+  };
+
+  const newOrder = createOrder(input);
+  stmtInsertOrderHistory.run(newOrder.id, "ORDER_DUPLICATED", `Duplicado del pedido #${orderId}`, String(orderId), null, "operator");
+  return newOrder;
+}
+
+// --- Search Orders ---
+
+export interface OrderSearchParams {
+  tenantId: number;
+  status?: OrderStatus;
+  search?: string;
+  dateFrom?: number;
+  dateTo?: number;
+  limit?: number;
+}
+
+export function searchOrders(params: OrderSearchParams): (Order & { item_count: number })[] {
+  let sql = `
+    SELECT o.*, COUNT(oi.id) as item_count
+    FROM orders o
+    LEFT JOIN order_items oi ON o.id = oi.order_id
+    WHERE o.tenant_id = ? AND o.deleted_at IS NULL
+  `;
+  const args: (string | number)[] = [params.tenantId];
+
+  if (params.status) {
+    sql += ` AND o.status = ?`;
+    args.push(params.status);
+  }
+
+  if (params.search) {
+    sql += ` AND (o.customer_name LIKE ? OR o.customer_phone LIKE ? OR EXISTS (SELECT 1 FROM order_items oi2 WHERE oi2.order_id = o.id AND oi2.product_name LIKE ?))`;
+    const pattern = `%${params.search}%`;
+    args.push(pattern, pattern, pattern);
+  }
+
+  if (params.dateFrom) {
+    sql += ` AND o.created_at >= ?`;
+    args.push(params.dateFrom);
+  }
+
+  if (params.dateTo) {
+    sql += ` AND o.created_at <= ?`;
+    args.push(params.dateTo);
+  }
+
+  sql += ` GROUP BY o.id ORDER BY o.created_at DESC LIMIT ?`;
+  args.push(params.limit || 50);
+
+  return db.prepare(sql).all(...args) as (Order & { item_count: number })[];
 }
 
 // Obtener pedidos por estado

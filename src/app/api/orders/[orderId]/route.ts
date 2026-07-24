@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getOrderById } from "@/lib/db";
+import {
+  getOrderById,
+  getOrderHistory,
+  deleteOrder,
+  updateOrder,
+  duplicateOrder,
+} from "@/lib/db";
 import { updateOrderStatus } from "@/lib/events";
 import { requireTenantId } from "@/lib/tenant";
 import type { OrderStatus } from "@/lib/db";
@@ -23,7 +29,9 @@ export async function GET(
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ order });
+    const history = getOrderHistory(orderId);
+
+    return NextResponse.json({ order, history });
   } catch (error) {
     console.error("Error fetching order:", error);
     return NextResponse.json(
@@ -48,45 +56,79 @@ export async function PATCH(
     }
 
     const body = await request.json();
-    const { status } = body;
 
-    if (!status) {
-      return NextResponse.json(
-        { error: "Status is required" },
-        { status: 400 },
-      );
+    // Si trae "status", es cambio de estado
+    if (body.status) {
+      const { status, cancelReason } = body;
+
+      const validStatuses: OrderStatus[] = [
+        "PENDING",
+        "CONFIRMED",
+        "PREPARING",
+        "ON_THE_WAY",
+        "DELIVERED",
+        "CANCELLED",
+      ];
+
+      if (!validStatuses.includes(status)) {
+        return NextResponse.json({ error: "Invalid status" }, { status: 400 });
+      }
+
+      const existingOrder = await getOrderById(tenantId, orderId);
+      if (!existingOrder) {
+        return NextResponse.json({ error: "Order not found" }, { status: 404 });
+      }
+
+      // Entregado no se puede cambiar
+      if (existingOrder.status === "DELIVERED") {
+        return NextResponse.json({ error: "No se puede modificar un pedido entregado" }, { status: 400 });
+      }
+
+      // Cancelar requiere motivo
+      if (status === "CANCELLED" && !cancelReason) {
+        return NextResponse.json({ error: "cancelReason is required to cancel" }, { status: 400 });
+      }
+
+      const updatedOrder = await updateOrderStatus(tenantId, orderId, status, cancelReason);
+
+      return NextResponse.json({ success: true, order: updatedOrder });
     }
 
-    // Validar status
-    const validStatuses: OrderStatus[] = [
-      "PENDING",
-      "CONFIRMED",
-      "PREPARING",
-      "ON_THE_WAY",
-      "DELIVERED",
-      "CANCELLED",
-    ];
-
-    if (!validStatuses.includes(status)) {
-      return NextResponse.json({ error: "Invalid status" }, { status: 400 });
+    // Si trae "action", es duplicar o eliminar
+    if (body.action === "duplicate") {
+      const newOrder = duplicateOrder(tenantId, orderId);
+      if (!newOrder) {
+        return NextResponse.json({ error: "Order not found" }, { status: 404 });
+      }
+      return NextResponse.json({ success: true, order: newOrder }, { status: 201 });
     }
 
-    // Verificar que el pedido existe
+    if (body.action === "delete") {
+      const ok = deleteOrder(tenantId, orderId);
+      if (!ok) {
+        return NextResponse.json({ error: "Solo se pueden eliminar pedidos pendientes" }, { status: 400 });
+      }
+      return NextResponse.json({ success: true });
+    }
+
+    // Si no, es edición del pedido
     const existingOrder = await getOrderById(tenantId, orderId);
     if (!existingOrder) {
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
     }
 
-    // Actualizar estado (con emisión de eventos)
-    const updatedOrder = await updateOrderStatus(tenantId, orderId, status);
-
-    // TODO: Emitir evento ORDER_STATUS_UPDATED via Socket.IO
-    // TODO: Enviar notificación si corresponde
-
-    return NextResponse.json({
-      success: true,
-      order: updatedOrder,
+    const updated = updateOrder(tenantId, orderId, {
+      customer_name: body.customer_name,
+      customer_phone: body.customer_phone,
+      notes: body.notes,
+      items: body.items,
     });
+
+    if (!updated) {
+      return NextResponse.json({ error: "No se pudo editar el pedido" }, { status: 400 });
+    }
+
+    return NextResponse.json({ success: true, order: updated });
   } catch (error) {
     console.error("Error updating order:", error);
     return NextResponse.json(

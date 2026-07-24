@@ -84,6 +84,7 @@ export async function updateOrderStatus(
   tenantId: number,
   orderId: number,
   newStatus: string,
+  cancelReason?: string,
 ) {
   // Obtener pedido actual para saber el estado anterior
   const currentOrder = await getOrderById(tenantId, orderId);
@@ -94,7 +95,7 @@ export async function updateOrderStatus(
   const previousStatus = currentOrder.status;
 
   // Actualizar estado
-  const updated = baseUpdateOrderStatus(tenantId, orderId, newStatus as any);
+  const updated = baseUpdateOrderStatus(tenantId, orderId, newStatus as any, cancelReason);
   if (!updated) {
     throw new Error("Failed to update order");
   }

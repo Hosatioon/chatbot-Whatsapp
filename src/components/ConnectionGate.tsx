@@ -10,9 +10,10 @@ import ConversationPanel from "./ConversationPanel";
 import ProductsPanel from "./ProductsPanel";
 import OrdersPanel from "./OrdersPanel";
 import ConfigPanel from "./ConfigPanel";
+import OperationsCenter from "./OperationsCenter";
 
 type Status = "disconnected" | "qr" | "connecting" | "connected";
-type View = "chats" | "products" | "orders" | "config";
+type View = "chats" | "products" | "orders" | "config" | "ops";
 
 function getStoredTenantId(): number {
   try {
@@ -175,6 +176,16 @@ export default function ConnectionGate() {
           Inventario
         </button>
         <button
+          onClick={() => setView("ops")}
+          className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+            view === "ops"
+              ? "bg-slate-900 text-white"
+              : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+          }`}
+        >
+          Operaciones
+        </button>
+        <button
           onClick={() => setView("orders")}
           className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
             view === "orders"
@@ -182,7 +193,7 @@ export default function ConnectionGate() {
               : "bg-gray-100 text-gray-700 hover:bg-gray-200"
           }`}
         >
-          Panel de Pedidos
+          Pedidos
         </button>
         <button
           onClick={() => setView("config")}
@@ -220,6 +231,10 @@ export default function ConnectionGate() {
               )}
             </main>
           </>
+        ) : view === "ops" ? (
+          <main className="flex-1 bg-gray-50 overflow-hidden">
+            <OperationsCenter selectedTenantId={selectedTenantId} />
+          </main>
         ) : view === "orders" ? (
           <main className="flex-1 bg-gray-50 overflow-hidden">
             <OrdersPanel selectedTenantId={selectedTenantId} />
