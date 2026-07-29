@@ -12,7 +12,11 @@ import {
   shutdownTenant,
   listActiveTenants,
 } from "../src/lib/baileys/client";
-import { listTenants, setConnectionState } from "../src/lib/db";
+import {
+  listTenants,
+  listActiveTenantsForBot,
+  setConnectionState,
+} from "../src/lib/db";
 import { runBackupCycle } from "./backup";
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
@@ -43,25 +47,25 @@ async function resetTenant(tenantId: number): Promise<void> {
 }
 
 async function startAllTenants(): Promise<void> {
-  const all = listTenants();
+  const all = listActiveTenantsForBot();
   const existingIds = new Set(all.map((t) => t.id));
   const active = new Set(listActiveTenants());
 
-  // 1. Apagar tenants que ya no existen en la DB (evita memory leak)
+  // 1. Apagar tenants que ya no están activos o fueron eliminados
   for (const activeId of active) {
     if (!existingIds.has(activeId)) {
       console.log(
-        `[bot:${activeId}] Tenant eliminado de la DB. Apagando socket...`,
+        `[bot:${activeId}] Tenant inactivo o eliminado. Apagando socket...`,
       );
       try {
         await shutdownTenant(activeId);
       } catch (err) {
-        console.warn(`[bot:${activeId}] Error apagando tenant borrado:`, err);
+        console.warn(`[bot:${activeId}] Error apagando tenant:`, err);
       }
     }
   }
 
-  // 2. Iniciar tenants nuevos
+  // 2. Iniciar tenants nuevos que tengan plan activo o trial
   for (const t of all) {
     if (active.has(t.id)) continue;
     try {
@@ -86,10 +90,8 @@ async function main(): Promise<void> {
   }
 
   // Backup cada 6 horas
-  const BACKUP_INTERVAL_MS = parseInt(
-    process.env.BACKUP_INTERVAL_HOURS || "6",
-    10,
-  ) * 60 * 60 * 1000;
+  const BACKUP_INTERVAL_MS =
+    parseInt(process.env.BACKUP_INTERVAL_HOURS || "6", 10) * 60 * 60 * 1000;
   setInterval(() => {
     if (shuttingDown) return;
     try {

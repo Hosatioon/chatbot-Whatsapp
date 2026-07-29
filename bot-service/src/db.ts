@@ -199,6 +199,21 @@ if (!columnExists("outbox", "remote_jid")) {
 if (!columnExists("tenant_plans", "trial_end_date")) {
   db.exec(`ALTER TABLE tenant_plans ADD COLUMN trial_end_date INTEGER`);
 }
+if (!columnExists("tenants", "business_name")) {
+  db.exec(`ALTER TABLE tenants ADD COLUMN business_name TEXT`);
+}
+if (!columnExists("tenants", "business_type")) {
+  db.exec(`ALTER TABLE tenants ADD COLUMN business_type TEXT`);
+}
+if (!columnExists("tenants", "payment_info")) {
+  db.exec(`ALTER TABLE tenants ADD COLUMN payment_info TEXT`);
+}
+if (!columnExists("tenants", "custom_greeting")) {
+  db.exec(`ALTER TABLE tenants ADD COLUMN custom_greeting TEXT`);
+}
+if (!columnExists("tenants", "custom_prompt")) {
+  db.exec(`ALTER TABLE tenants ADD COLUMN custom_prompt TEXT`);
+}
 
 export default db;
 
@@ -207,6 +222,11 @@ export type Tenant = {
   name: string;
   slug: string;
   theme: string;
+  business_name: string | null;
+  business_type: string | null;
+  payment_info: string | null;
+  custom_greeting: string | null;
+  custom_prompt: string | null;
   created_at: number;
 };
 
@@ -367,6 +387,14 @@ const stmtGetTenantPlan = db.prepare<
 
 export function listTenants(): Tenant[] {
   return stmtListTenants.all();
+}
+
+const stmtGetTenantById = db.prepare<[number], Tenant>(
+  "SELECT * FROM tenants WHERE id = ?",
+);
+
+export function getTenantById(id: number): Tenant | null {
+  return stmtGetTenantById.get(id) ?? null;
 }
 
 export function getConnectionState(tenantId: number): ConnectionState {

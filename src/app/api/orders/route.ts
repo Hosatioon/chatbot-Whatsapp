@@ -7,8 +7,11 @@ import type { CreateOrderInput, OrderStatus } from "@/lib/db";
 // GET - Listar pedidos del tenant
 export async function GET(request: NextRequest) {
   try {
-    const { tenantId } = await requireTenantId();
+    const ctx = await requireTenantId();
     const { searchParams } = new URL(request.url);
+    const queryTenant = Number(searchParams.get("tenantId") ?? 0);
+    const tenantId =
+      ctx.isSuperAdmin && queryTenant > 0 ? queryTenant : ctx.tenantId;
     const limit = Math.min(Number(searchParams.get("limit") || "50"), 100);
     const status = searchParams.get("status") || undefined;
     const search = searchParams.get("search") || undefined;
@@ -18,7 +21,12 @@ export async function GET(request: NextRequest) {
     // Si hay búsqueda o filtro de fecha, usar searchOrders
     if (search || dateFrom || dateTo) {
       const validStatuses: OrderStatus[] = [
-        "PENDING", "CONFIRMED", "PREPARING", "ON_THE_WAY", "DELIVERED", "CANCELLED",
+        "PENDING",
+        "CONFIRMED",
+        "PREPARING",
+        "ON_THE_WAY",
+        "DELIVERED",
+        "CANCELLED",
       ];
       if (status && !validStatuses.includes(status as OrderStatus)) {
         return NextResponse.json({ error: "Invalid status" }, { status: 400 });
@@ -38,7 +46,12 @@ export async function GET(request: NextRequest) {
     let orders;
     if (status) {
       const validStatuses = [
-        "PENDING", "CONFIRMED", "PREPARING", "ON_THE_WAY", "DELIVERED", "CANCELLED",
+        "PENDING",
+        "CONFIRMED",
+        "PREPARING",
+        "ON_THE_WAY",
+        "DELIVERED",
+        "CANCELLED",
       ];
       if (!validStatuses.includes(status)) {
         return NextResponse.json({ error: "Invalid status" }, { status: 400 });
@@ -62,7 +75,11 @@ export async function GET(request: NextRequest) {
 // POST - Crear un nuevo pedido
 export async function POST(request: NextRequest) {
   try {
-    const { tenantId } = await requireTenantId();
+    const ctx = await requireTenantId();
+    const { searchParams } = new URL(request.url);
+    const queryTenant = Number(searchParams.get("tenantId") ?? 0);
+    const tenantId =
+      ctx.isSuperAdmin && queryTenant > 0 ? queryTenant : ctx.tenantId;
     const body = await request.json();
 
     // Validar body

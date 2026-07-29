@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { SYSTEM_PROMPT } from "./system-prompt";
+import { buildSystemPromptForTenant } from "./system-prompt";
 import { getActiveProducts } from "./db";
 import type { Message } from "./db";
 
@@ -14,7 +14,7 @@ const client = new OpenAI({
   apiKey: apiKey ?? "missing",
   baseURL: "https://openrouter.ai/api/v1",
   defaultHeaders: {
-    "HTTP-Referer": "http://localhost:3000",
+    "HTTP-Referer": process.env.APP_URL || "http://localhost:3000",
     "X-Title": "Mondrex",
   },
 });
@@ -42,7 +42,7 @@ function buildSystemPrompt(tenantId: number): string {
     }
     catalog += "\nUsá estos precios exactos. No inventes otros.\n";
   }
-  return SYSTEM_PROMPT + catalog;
+  return buildSystemPromptForTenant(tenantId) + catalog;
 }
 
 export interface LLMResponse {

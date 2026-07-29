@@ -37,6 +37,34 @@ const RESERVED_SLUGS = new Set([
   "www",
 ]);
 
+// Dominios de email desechables conocidos
+const DISPOSABLE_DOMAINS = new Set([
+  "10minutemail.com",
+  "guerrillamail.com",
+  "tempmail.com",
+  "tempmail.org",
+  "mailinator.com",
+  "throwaway.email",
+  "yopmail.com",
+  "getnada.com",
+  "dispostable.com",
+  "maildrop.cc",
+  "fakemail.net",
+  "sharklasers.com",
+  "guerrillamailblock.com",
+  "spam4.me",
+  "temp-mail.org",
+  "emailondeck.com",
+  "fakeinbox.com",
+  "mintemail.com",
+  "mohmal.com",
+  "tmpmail.net",
+]);
+
+function isDisposableEmail(domain: string): boolean {
+  return DISPOSABLE_DOMAINS.has(domain);
+}
+
 const RegisterBody = z.object({
   tenantName: z.string().trim().min(2).max(80),
   tenantSlug: z
@@ -50,6 +78,8 @@ const RegisterBody = z.object({
   name: z.string().trim().min(1).max(80),
   email: z.string().trim().email(),
   password: z.string().trim().min(8).max(100),
+  // Honeypot: campo oculto que los bots llenan automáticamente
+  website: z.string().max(0).optional(),
 });
 
 export async function POST(req: Request) {
@@ -67,7 +97,25 @@ export async function POST(req: Request) {
       );
     }
 
-    const { tenantName, tenantSlug, name, email, password } = parsed.data;
+    const { tenantName, tenantSlug, name, email, password, website } =
+      parsed.data;
+
+    // Honeypot: si el campo oculto tiene contenido, es un bot
+    if (website) {
+      return NextResponse.json(
+        { ok: true, message: "Cuenta creada." },
+        { status: 201 },
+      );
+    }
+
+    // Validar email desechable
+    const emailDomain = email.split("@")[1]?.toLowerCase() ?? "";
+    if (isDisposableEmail(emailDomain)) {
+      return NextResponse.json(
+        { error: "No se permiten emails desechables. Usá un email real." },
+        { status: 400 },
+      );
+    }
 
     if (getTenantBySlug(tenantSlug)) {
       return NextResponse.json(

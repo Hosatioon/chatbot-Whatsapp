@@ -95,6 +95,13 @@ export interface Tenant {
   payment_info: string | null;
   custom_greeting: string | null;
   custom_prompt: string | null;
+  catalog_url: string | null;
+  catalog_message: string | null;
+  assistant_name: string | null;
+  business_address: string | null;
+  business_hours: string | null;
+  out_of_hours_message: string | null;
+  extra_links: string | null;
   created_at: number;
 }
 
@@ -558,6 +565,27 @@ if (!hasColumn("tenants", "custom_greeting")) {
 }
 if (!hasColumn("tenants", "custom_prompt")) {
   db.exec("ALTER TABLE tenants ADD COLUMN custom_prompt TEXT");
+}
+if (!hasColumn("tenants", "catalog_url")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN catalog_url TEXT");
+}
+if (!hasColumn("tenants", "catalog_message")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN catalog_message TEXT");
+}
+if (!hasColumn("tenants", "assistant_name")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN assistant_name TEXT");
+}
+if (!hasColumn("tenants", "business_address")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN business_address TEXT");
+}
+if (!hasColumn("tenants", "business_hours")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN business_hours TEXT");
+}
+if (!hasColumn("tenants", "out_of_hours_message")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN out_of_hours_message TEXT");
+}
+if (!hasColumn("tenants", "extra_links")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN extra_links TEXT");
 }
 if (!hasColumn("tenant_plans", "trial_end_date")) {
   db.exec("ALTER TABLE tenant_plans ADD COLUMN trial_end_date INTEGER");
@@ -1032,6 +1060,73 @@ export function toggleProductActive(
 }
 
 // ---------------------------------------------------------------------------
+// Búsqueda de productos para function calling del LLM
+// ---------------------------------------------------------------------------
+
+const stmtSearchProducts = db.prepare<
+  [number, string, string, number],
+  Product
+>(
+  `SELECT * FROM products WHERE tenant_id = ? AND active = 1 AND (LOWER(name) LIKE ? OR LOWER(description) LIKE ?) ORDER BY name ASC LIMIT ?`,
+);
+
+export function searchProducts(
+  tenantId: number,
+  query: string,
+  limit = 10,
+): Product[] {
+  const pattern = `%${query.toLowerCase()}%`;
+  return stmtSearchProducts.all(tenantId, pattern, pattern, limit);
+}
+
+const stmtGetProductByName = db.prepare<[number, string], Product>(
+  `SELECT * FROM products WHERE tenant_id = ? AND active = 1 AND LOWER(name) LIKE ? ORDER BY name ASC LIMIT 1`,
+);
+
+export function getProductByName(
+  tenantId: number,
+  name: string,
+): Product | null {
+  const pattern = `%${name.toLowerCase()}%`;
+  return stmtGetProductByName.get(tenantId, pattern) ?? null;
+}
+
+const stmtGetProductStock = db.prepare<
+  [number, string],
+  { id: number; name: string; stock: number }
+>(
+  `SELECT id, name, stock FROM products WHERE tenant_id = ? AND active = 1 AND LOWER(name) LIKE ? LIMIT 1`,
+);
+
+export function getProductStock(
+  tenantId: number,
+  name: string,
+): { id: number; name: string; stock: number } | null {
+  const pattern = `%${name.toLowerCase()}%`;
+  return stmtGetProductStock.get(tenantId, pattern) ?? null;
+}
+
+const stmtDecrementStock = db.prepare<[number, number, number]>(
+  `UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ? AND tenant_id = ?`,
+);
+
+export function decrementStock(
+  tenantId: number,
+  productId: number,
+  quantity: number,
+): void {
+  stmtDecrementStock.run(quantity, productId, tenantId);
+}
+
+const stmtGetTopProducts = db.prepare<[number, number], Product>(
+  `SELECT * FROM products WHERE tenant_id = ? AND active = 1 AND stock > 0 ORDER BY name ASC LIMIT ?`,
+);
+
+export function getTopProducts(tenantId: number, limit = 10): Product[] {
+  return stmtGetTopProducts.all(tenantId, limit);
+}
+
+// ---------------------------------------------------------------------------
 // Productos (unscoped — super-admin)
 // ---------------------------------------------------------------------------
 
@@ -1157,6 +1252,17 @@ export function listTenants(): Tenant[] {
   return stmtListTenants.all();
 }
 
+const stmtListActiveTenantsForBot = db.prepare<[], Tenant>(
+  `SELECT t.* FROM tenants t
+   LEFT JOIN tenant_plans tp ON tp.tenant_id = t.id
+   WHERE tp.status IS NULL OR tp.status IN ('active', 'trial')
+   ORDER BY t.id ASC`,
+);
+
+export function listActiveTenantsForBot(): Tenant[] {
+  return stmtListActiveTenantsForBot.all();
+}
+
 export function getTenantById(id: number): Tenant | null {
   return stmtGetTenantById.get(id) ?? null;
 }
@@ -1186,23 +1292,121 @@ export interface TenantConfig {
   payment_info: string | null;
   custom_greeting: string | null;
   custom_prompt: string | null;
+  catalog_url: string | null;
+  catalog_message: string | null;
+  assistant_name: string | null;
+  business_address: string | null;
+  business_hours: string | null;
+  out_of_hours_message: string | null;
+  extra_links: string | null;
+}
+
+export interface TenantLink {
+  label: string;
+  url: string;
+}
+
+export interface BusinessHours {
+  enabled: boolean;
+  days: number[];
+  open: string;
+  close: string;
 }
 
 const stmtUpdateTenantConfig = db.prepare<
-  [string | null, string | null, string | null, string | null, string | null, number]
+  [
+    string | null,
+    string | null,
+    string | null,
+    string | null,
+    string | null,
+    string | null,
+    string | null,
+    string | null,
+    string | null,
+    string | null,
+    string | null,
+    string | null,
+    number,
+  ]
 >(
-  `UPDATE tenants SET business_name = ?, business_type = ?, payment_info = ?, custom_greeting = ?, custom_prompt = ? WHERE id = ?`,
+  `UPDATE tenants SET business_name = ?, business_type = ?, payment_info = ?, custom_greeting = ?, custom_prompt = ?, catalog_url = ?, catalog_message = ?, assistant_name = ?, business_address = ?, business_hours = ?, out_of_hours_message = ?, extra_links = ? WHERE id = ?`,
 );
 
-export function updateTenantConfig(tenantId: number, config: TenantConfig): void {
+export function updateTenantConfig(
+  tenantId: number,
+  config: TenantConfig,
+): void {
   stmtUpdateTenantConfig.run(
     config.business_name || null,
     config.business_type || null,
     config.payment_info || null,
     config.custom_greeting || null,
     config.custom_prompt || null,
+    config.catalog_url || null,
+    config.catalog_message || null,
+    config.assistant_name || null,
+    config.business_address || null,
+    config.business_hours || null,
+    config.out_of_hours_message || null,
+    config.extra_links || null,
     tenantId,
   );
+}
+
+export function getTenantLinks(tenant: Tenant): TenantLink[] {
+  const links: TenantLink[] = [];
+  if (tenant.catalog_url) {
+    links.push({ label: "Catálogo", url: tenant.catalog_url });
+  }
+  if (tenant.extra_links) {
+    try {
+      const parsed = JSON.parse(tenant.extra_links) as TenantLink[];
+      if (Array.isArray(parsed)) {
+        for (const l of parsed) {
+          if (l && typeof l.label === "string" && typeof l.url === "string") {
+            links.push({ label: l.label, url: l.url });
+          }
+        }
+      }
+    } catch {
+      // JSON inválido, ignorar
+    }
+  }
+  return links;
+}
+
+export function parseBusinessHours(raw: string | null): BusinessHours | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as BusinessHours;
+    if (!parsed || typeof parsed !== "object") return null;
+    if (!Array.isArray(parsed.days) || !parsed.open || !parsed.close)
+      return null;
+    return {
+      enabled: !!parsed.enabled,
+      days: parsed.days.filter((d) => d >= 1 && d <= 7),
+      open: parsed.open,
+      close: parsed.close,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function isWithinBusinessHours(
+  hours: BusinessHours,
+  now: Date = new Date(),
+): boolean {
+  if (!hours.enabled) return true;
+  const day = now.getDay() === 0 ? 7 : now.getDay();
+  if (!hours.days.includes(day)) return false;
+  const [openH, openM] = hours.open.split(":").map(Number);
+  const [closeH, closeM] = hours.close.split(":").map(Number);
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const openMin = openH * 60 + openM;
+  const closeMin = closeH * 60 + closeM;
+  return nowMin >= openMin && nowMin < closeMin;
 }
 
 export function getTenantTheme(tenantId: number): TenantTheme {
@@ -1740,9 +1944,9 @@ export function updateOrderStatus(
 
     // Si se canceló, guardar motivo
     if (status === "CANCELLED" && cancelReason) {
-      db.prepare("UPDATE orders SET cancel_reason = ? WHERE id = ? AND tenant_id = ?").run(
-        cancelReason, orderId, tenantId,
-      );
+      db.prepare(
+        "UPDATE orders SET cancel_reason = ? WHERE id = ? AND tenant_id = ?",
+      ).run(cancelReason, orderId, tenantId);
       stmtInsertOrderHistory.run(
         orderId,
         "CANCEL_REASON",
@@ -1792,7 +1996,9 @@ export function deleteOrder(tenantId: number, orderId: number): boolean {
 
   db.prepare("DELETE FROM order_items WHERE order_id = ?").run(orderId);
   db.prepare("DELETE FROM order_history WHERE order_id = ?").run(orderId);
-  const result = db.prepare("DELETE FROM orders WHERE id = ? AND tenant_id = ?").run(orderId, tenantId);
+  const result = db
+    .prepare("DELETE FROM orders WHERE id = ? AND tenant_id = ?")
+    .run(orderId, tenantId);
   return result.changes > 0;
 }
 
@@ -1825,21 +2031,45 @@ export function updateOrder(
 
   const transaction = db.transaction(() => {
     if (updates.customer_name !== undefined && allowedFields.customer_name) {
-      db.prepare("UPDATE orders SET customer_name = ?, updated_at = unixepoch() WHERE id = ? AND tenant_id = ?")
-        .run(updates.customer_name, orderId, tenantId);
-      stmtInsertOrderHistory.run(orderId, "FIELD_CHANGE", "Cliente actualizado", order.customer_name, updates.customer_name, "operator");
+      db.prepare(
+        "UPDATE orders SET customer_name = ?, updated_at = unixepoch() WHERE id = ? AND tenant_id = ?",
+      ).run(updates.customer_name, orderId, tenantId);
+      stmtInsertOrderHistory.run(
+        orderId,
+        "FIELD_CHANGE",
+        "Cliente actualizado",
+        order.customer_name,
+        updates.customer_name,
+        "operator",
+      );
     }
 
     if (updates.customer_phone !== undefined && allowedFields.customer_phone) {
-      db.prepare("UPDATE orders SET customer_phone = ?, updated_at = unixepoch() WHERE id = ? AND tenant_id = ?")
-        .run(updates.customer_phone, orderId, tenantId);
-      stmtInsertOrderHistory.run(orderId, "FIELD_CHANGE", "Teléfono actualizado", order.customer_phone, updates.customer_phone, "operator");
+      db.prepare(
+        "UPDATE orders SET customer_phone = ?, updated_at = unixepoch() WHERE id = ? AND tenant_id = ?",
+      ).run(updates.customer_phone, orderId, tenantId);
+      stmtInsertOrderHistory.run(
+        orderId,
+        "FIELD_CHANGE",
+        "Teléfono actualizado",
+        order.customer_phone,
+        updates.customer_phone,
+        "operator",
+      );
     }
 
     if (updates.notes !== undefined && allowedFields.notes) {
-      db.prepare("UPDATE orders SET notes = ?, updated_at = unixepoch() WHERE id = ? AND tenant_id = ?")
-        .run(updates.notes, orderId, tenantId);
-      stmtInsertOrderHistory.run(orderId, "FIELD_CHANGE", "Notas actualizadas", order.notes, updates.notes, "operator");
+      db.prepare(
+        "UPDATE orders SET notes = ?, updated_at = unixepoch() WHERE id = ? AND tenant_id = ?",
+      ).run(updates.notes, orderId, tenantId);
+      stmtInsertOrderHistory.run(
+        orderId,
+        "FIELD_CHANGE",
+        "Notas actualizadas",
+        order.notes,
+        updates.notes,
+        "operator",
+      );
     }
 
     if (updates.items && allowedFields.items) {
@@ -1849,11 +2079,25 @@ export function updateOrder(
       for (const item of updates.items) {
         const totalPrice = item.quantity * item.unit_price;
         total += totalPrice;
-        stmtInsertOrderItem.run(orderId, item.product_name, item.quantity, item.unit_price, totalPrice);
+        stmtInsertOrderItem.run(
+          orderId,
+          item.product_name,
+          item.quantity,
+          item.unit_price,
+          totalPrice,
+        );
       }
-      db.prepare("UPDATE orders SET total_amount = ?, updated_at = unixepoch() WHERE id = ? AND tenant_id = ?")
-        .run(total, orderId, tenantId);
-      stmtInsertOrderHistory.run(orderId, "ITEMS_CHANGE", "Productos actualizados", null, JSON.stringify(updates.items), "operator");
+      db.prepare(
+        "UPDATE orders SET total_amount = ?, updated_at = unixepoch() WHERE id = ? AND tenant_id = ?",
+      ).run(total, orderId, tenantId);
+      stmtInsertOrderHistory.run(
+        orderId,
+        "ITEMS_CHANGE",
+        "Productos actualizados",
+        null,
+        JSON.stringify(updates.items),
+        "operator",
+      );
     }
   });
 
@@ -1887,7 +2131,14 @@ export function duplicateOrder(
   };
 
   const newOrder = createOrder(input);
-  stmtInsertOrderHistory.run(newOrder.id, "ORDER_DUPLICATED", `Duplicado del pedido #${orderId}`, String(orderId), null, "operator");
+  stmtInsertOrderHistory.run(
+    newOrder.id,
+    "ORDER_DUPLICATED",
+    `Duplicado del pedido #${orderId}`,
+    String(orderId),
+    null,
+    "operator",
+  );
   return newOrder;
 }
 
@@ -1902,7 +2153,9 @@ export interface OrderSearchParams {
   limit?: number;
 }
 
-export function searchOrders(params: OrderSearchParams): (Order & { item_count: number })[] {
+export function searchOrders(
+  params: OrderSearchParams,
+): (Order & { item_count: number })[] {
   let sql = `
     SELECT o.*, COUNT(oi.id) as item_count
     FROM orders o

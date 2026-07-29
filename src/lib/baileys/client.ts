@@ -11,10 +11,46 @@ import pino from "pino";
 import qrcodeTerminal from "qrcode-terminal";
 import path from "node:path";
 import fs from "node:fs";
-import { setConnectionState, getConnectionState } from "../db";
+import { setConnectionState, getConnectionState, getTenantById } from "../db";
 import { handleIncomingMessages, processOutbox } from "./handler";
 
 const AUTH_ROOT = path.resolve(process.cwd(), "auth");
+
+const ALERT_WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL || "";
+const APP_URL = process.env.APP_URL || "http://localhost:3000";
+
+async function sendDisconnectionAlert(
+  tenantId: number,
+  reason: string,
+): Promise<void> {
+  if (!ALERT_WEBHOOK_URL) return;
+  const tenant = getTenantById(tenantId);
+  const tenantName =
+    tenant?.business_name || tenant?.name || `Tenant #${tenantId}`;
+  const payload = {
+    embeds: [
+      {
+        title: "⚠️ Bot desconectado",
+        description: `**${tenantName}** (ID: ${tenantId}) se desconectó`,
+        fields: [
+          { name: "Razón", value: reason, inline: false },
+          { name: "Dashboard", value: `${APP_URL}`, inline: false },
+        ],
+        color: 16711680,
+        timestamp: new Date().toISOString(),
+      },
+    ],
+  };
+  try {
+    await fetch(ALERT_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.warn(`[bot:${tenantId}] No se pudo enviar alerta:`, err);
+  }
+}
 
 function authDirFor(tenantId: number): string {
   return path.join(AUTH_ROOT, String(tenantId));
@@ -32,6 +68,8 @@ interface TenantState {
   outboxTimer: NodeJS.Timeout | null;
   startTs: number;
   reconnectCount: number;
+  qrTimer: NodeJS.Timeout | null;
+  qrGeneratedAt: number | null;
 }
 
 const tenants = new Map<number, TenantState>();
@@ -45,6 +83,8 @@ function getOrCreateState(tenantId: number): TenantState {
       outboxTimer: null,
       startTs: Math.floor(Date.now() / 1000),
       reconnectCount: 0,
+      qrTimer: null,
+      qrGeneratedAt: null,
     };
     tenants.set(tenantId, s);
   }
@@ -112,6 +152,15 @@ async function start(tenantId: number): Promise<void> {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
+      // No generar QR nuevo si ya estamos conectados
+      const current = getConnectionState(tenantId);
+      if (current.status === "connected") {
+        console.log(
+          `[bot:${tenantId}] QR recibido pero ya conectado, ignorando`,
+        );
+        return;
+      }
+
       console.log(
         `[bot:${tenantId}] QR recibido. Escanealo desde http://localhost:3000`,
       );
@@ -121,6 +170,29 @@ async function start(tenantId: number): Promise<void> {
         qr_string: qr,
         phone: null,
       });
+      state.qrGeneratedAt = Date.now();
+
+      // Limpiar timer anterior si existe
+      if (state.qrTimer) clearTimeout(state.qrTimer);
+
+      // QR expira en ~60s. Si no se escanea, forzar reconexión para generar uno nuevo
+      state.qrTimer = setTimeout(() => {
+        const stillQr = getConnectionState(tenantId);
+        if (stillQr.status === "qr") {
+          console.log(
+            `[bot:${tenantId}] QR expiró (60s sin escaneo). Reconectando...`,
+          );
+          state.qrTimer = null;
+          state.qrGeneratedAt = null;
+          try {
+            sock.end(undefined);
+          } catch {
+            /* ignore */
+          }
+          state.handle = null;
+          scheduleReconnect(tenantId);
+        }
+      }, 60000);
     }
 
     if (connection === "connecting") {
@@ -134,6 +206,12 @@ async function start(tenantId: number): Promise<void> {
       const phone = extractPhoneFromJid(sock.user?.id);
       console.log(`[bot:${tenantId}] Conectado como ${phone ?? "(sin id)"}`);
       state.reconnectCount = 0; // reset al conectar exitosamente
+      // Limpiar timer de QR si estaba activo
+      if (state.qrTimer) {
+        clearTimeout(state.qrTimer);
+        state.qrTimer = null;
+      }
+      state.qrGeneratedAt = null;
       setConnectionState(tenantId, {
         status: "connected",
         qr_string: null,
@@ -167,6 +245,17 @@ async function start(tenantId: number): Promise<void> {
         });
         return;
       }
+
+      // Alertar desconexiones inesperadas (no loggedOut ni restart manual)
+      const reasonText =
+        code === DisconnectReason.connectionClosed
+          ? "Conexión cerrada por WhatsApp"
+          : code === DisconnectReason.connectionLost
+            ? "Conexión perdida"
+            : code === DisconnectReason.timedOut
+              ? "Timeout de conexión"
+              : `Código ${code}`;
+      void sendDisconnectionAlert(tenantId, reasonText);
 
       scheduleReconnect(tenantId, typeof code === "number" ? code : undefined);
     }
@@ -275,6 +364,10 @@ export async function shutdownTenant(tenantId: number): Promise<void> {
   if (state.outboxTimer) {
     clearInterval(state.outboxTimer);
     state.outboxTimer = null;
+  }
+  if (state.qrTimer) {
+    clearTimeout(state.qrTimer);
+    state.qrTimer = null;
   }
   if (state.handle) {
     await state.handle.shutdown();

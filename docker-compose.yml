@@ -1,9 +1,19 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: ordifast-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - ./data/redis:/data
+    ports:
+      - "6380:6379"
+
   web:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: chatbot-web
+    container_name: ordifast-web
     restart: unless-stopped
     ports:
       - "3000:3000"
@@ -14,14 +24,16 @@ services:
       - .env.local
     environment:
       - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
     depends_on:
+      - redis
       - bot
 
   bot:
     build:
       context: .
       dockerfile: Dockerfile.bot
-    container_name: chatbot-bot
+    container_name: ordifast-bot
     restart: unless-stopped
     volumes:
       - ./data:/app/data
@@ -30,4 +42,6 @@ services:
       - .env.local
     environment:
       - NODE_ENV=production
-
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis

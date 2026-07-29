@@ -18,6 +18,8 @@ interface Props {
 
 export default function QRScreen({ status, qrPng }: Props) {
   const [secondsDisconnected, setSecondsDisconnected] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [qrAge, setQrAge] = useState(0);
 
   useEffect(() => {
     if (status !== "disconnected") {
@@ -27,6 +29,28 @@ export default function QRScreen({ status, qrPng }: Props) {
     const t = setInterval(() => setSecondsDisconnected((s) => s + 1), 1000);
     return () => clearInterval(t);
   }, [status]);
+
+  useEffect(() => {
+    if (status !== "qr") {
+      setQrAge(0);
+      return;
+    }
+    const t = setInterval(() => setQrAge((s) => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [status, qrPng]);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await fetch("/api/connection/disconnect", { method: "POST" });
+    } catch {
+      /* ignore */
+    } finally {
+      setTimeout(() => setRefreshing(false), 3000);
+    }
+  };
+
+  const qrExpiresIn = Math.max(0, 60 - qrAge);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 to-slate-200 p-6">
@@ -68,7 +92,9 @@ export default function QRScreen({ status, qrPng }: Props) {
           {status === "qr" && (
             <>
               <span className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
-              <span className="text-amber-700">Esperando escaneo...</span>
+              <span className="text-amber-700">
+                Esperando escaneo... expira en {qrExpiresIn}s
+              </span>
             </>
           )}
           {status === "connecting" && (
@@ -84,6 +110,26 @@ export default function QRScreen({ status, qrPng }: Props) {
             </>
           )}
         </div>
+
+        {(status === "qr" || status === "disconnected") && (
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="mt-4 w-full rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-slate-800 disabled:opacity-50"
+          >
+            {refreshing
+              ? "Refrescando..."
+              : status === "qr"
+                ? "Refrescar QR"
+                : "Reintentar conexión"}
+          </button>
+        )}
+
+        {status === "qr" && qrExpiresIn <= 10 && (
+          <p className="mt-2 text-center text-xs text-amber-600">
+            El QR expira pronto. Refrescá para obtener uno nuevo.
+          </p>
+        )}
 
         {status === "disconnected" && secondsDisconnected > 10 && (
           <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">

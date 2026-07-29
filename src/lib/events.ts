@@ -69,10 +69,56 @@ export function emitOrderEvent(
 }
 
 // Wrapper para crear pedido con emisión de eventos
-import { createOrder as baseCreateOrder, type CreateOrderInput } from "./db";
+import {
+  createOrder as baseCreateOrder,
+  type CreateOrderInput,
+  getProductByName,
+  decrementStock,
+} from "./db";
 
-export async function createOrder(input: CreateOrderInput) {
+export interface CreateOrderResult {
+  success: boolean;
+  order?: Order & { items: any[] };
+  error?: string;
+  stockErrors?: Array<{ name: string; requested: number; available: number }>;
+}
+
+export async function createOrder(
+  input: CreateOrderInput,
+): Promise<Order & { items: any[] }> {
+  // Validar stock antes de crear
+  const stockErrors: Array<{
+    name: string;
+    requested: number;
+    available: number;
+  }> = [];
+  for (const item of input.items) {
+    const product = getProductByName(input.tenant_id, item.product_name);
+    if (product && product.stock < item.quantity) {
+      stockErrors.push({
+        name: item.product_name,
+        requested: item.quantity,
+        available: product.stock,
+      });
+    }
+  }
+  if (stockErrors.length > 0) {
+    const detail = stockErrors
+      .map((e) => `${e.name}: pediste ${e.requested}, hay ${e.available}`)
+      .join("; ");
+    throw new Error(`Stock insuficiente: ${detail}`);
+  }
+
   const order = await baseCreateOrder(input);
+
+  // Descontar stock después de crear el pedido exitosamente
+  for (const item of input.items) {
+    const product = getProductByName(input.tenant_id, item.product_name);
+    if (product) {
+      decrementStock(input.tenant_id, product.id, item.quantity);
+    }
+  }
+
   emitOrderEvent("ORDER_CREATED", order);
   return order;
 }
@@ -95,7 +141,12 @@ export async function updateOrderStatus(
   const previousStatus = currentOrder.status;
 
   // Actualizar estado
-  const updated = baseUpdateOrderStatus(tenantId, orderId, newStatus as any, cancelReason);
+  const updated = baseUpdateOrderStatus(
+    tenantId,
+    orderId,
+    newStatus as any,
+    cancelReason,
+  );
   if (!updated) {
     throw new Error("Failed to update order");
   }

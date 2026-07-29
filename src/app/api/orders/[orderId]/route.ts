@@ -16,7 +16,11 @@ export async function GET(
   { params }: { params: Promise<{ orderId: string }> },
 ) {
   try {
-    const { tenantId } = await requireTenantId();
+    const ctx = await requireTenantId();
+    const url = new URL(request.url);
+    const queryTenant = Number(url.searchParams.get("tenantId") ?? 0);
+    const tenantId =
+      ctx.isSuperAdmin && queryTenant > 0 ? queryTenant : ctx.tenantId;
     const { orderId: orderIdParam } = await params;
     const orderId = Number(orderIdParam);
 
@@ -47,7 +51,11 @@ export async function PATCH(
   { params }: { params: Promise<{ orderId: string }> },
 ) {
   try {
-    const { tenantId } = await requireTenantId();
+    const ctx = await requireTenantId();
+    const url = new URL(request.url);
+    const queryTenant = Number(url.searchParams.get("tenantId") ?? 0);
+    const tenantId =
+      ctx.isSuperAdmin && queryTenant > 0 ? queryTenant : ctx.tenantId;
     const { orderId: orderIdParam } = await params;
     const orderId = Number(orderIdParam);
 
@@ -81,15 +89,26 @@ export async function PATCH(
 
       // Entregado no se puede cambiar
       if (existingOrder.status === "DELIVERED") {
-        return NextResponse.json({ error: "No se puede modificar un pedido entregado" }, { status: 400 });
+        return NextResponse.json(
+          { error: "No se puede modificar un pedido entregado" },
+          { status: 400 },
+        );
       }
 
       // Cancelar requiere motivo
       if (status === "CANCELLED" && !cancelReason) {
-        return NextResponse.json({ error: "cancelReason is required to cancel" }, { status: 400 });
+        return NextResponse.json(
+          { error: "cancelReason is required to cancel" },
+          { status: 400 },
+        );
       }
 
-      const updatedOrder = await updateOrderStatus(tenantId, orderId, status, cancelReason);
+      const updatedOrder = await updateOrderStatus(
+        tenantId,
+        orderId,
+        status,
+        cancelReason,
+      );
 
       return NextResponse.json({ success: true, order: updatedOrder });
     }
@@ -100,13 +119,19 @@ export async function PATCH(
       if (!newOrder) {
         return NextResponse.json({ error: "Order not found" }, { status: 404 });
       }
-      return NextResponse.json({ success: true, order: newOrder }, { status: 201 });
+      return NextResponse.json(
+        { success: true, order: newOrder },
+        { status: 201 },
+      );
     }
 
     if (body.action === "delete") {
       const ok = deleteOrder(tenantId, orderId);
       if (!ok) {
-        return NextResponse.json({ error: "Solo se pueden eliminar pedidos pendientes" }, { status: 400 });
+        return NextResponse.json(
+          { error: "Solo se pueden eliminar pedidos pendientes" },
+          { status: 400 },
+        );
       }
       return NextResponse.json({ success: true });
     }
@@ -125,7 +150,10 @@ export async function PATCH(
     });
 
     if (!updated) {
-      return NextResponse.json({ error: "No se pudo editar el pedido" }, { status: 400 });
+      return NextResponse.json(
+        { error: "No se pudo editar el pedido" },
+        { status: 400 },
+      );
     }
 
     return NextResponse.json({ success: true, order: updated });

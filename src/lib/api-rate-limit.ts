@@ -6,6 +6,8 @@ interface RateEntry {
 }
 
 // Map simple en memoria. Para 5 tenants por VPS esto sobra.
+// NOTA: Si se escala a múltiples contenedores, migrar a Redis usando
+// getRedis() de src/lib/redis.ts con INCR + EXPIRE.
 const apiLimiter = new Map<string, RateEntry>();
 
 // Limpieza periódica de entradas expiradas (cada 5 min)

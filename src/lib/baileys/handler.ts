@@ -11,6 +11,10 @@ import {
   incrementDailyUsage,
   getLLMBudgetStatus,
   recordLLMUsage,
+  getTenantById,
+  getTenantLinks,
+  parseBusinessHours,
+  isWithinBusinessHours,
 } from "../db";
 import { generateReply, type LLMResponse } from "../openrouter";
 import { createOrder } from "../events";
@@ -29,6 +33,35 @@ function maybePurge() {
       console.error("[bot] purgeOldMessageEvents error:", e);
     }
   }
+}
+
+// Delay aleatorio humanizado: nunca enviar dos mensajes en el mismo segundo
+function humanDelay(minMs: number, maxMs: number): Promise<void> {
+  const ms = minMs + Math.floor(Math.random() * (maxMs - minMs));
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// Construir el bloque de links programático (sin IA)
+function buildLinksMessage(tenantId: number): string | null {
+  const tenant = getTenantById(tenantId);
+  if (!tenant) return null;
+  const links = getTenantLinks(tenant);
+  if (links.length === 0) return null;
+  const lines: string[] = [];
+  const catalogMsg = tenant.catalog_message || "Aquí te dejo nuestro catálogo";
+  const catalogLink = links.find((l) => l.label === "Catálogo");
+  if (catalogLink) {
+    lines.push(catalogMsg);
+    lines.push(catalogLink.url);
+  }
+  const extraLinks = links.filter((l) => l.label !== "Catálogo");
+  if (extraLinks.length > 0) {
+    lines.push("");
+    for (const l of extraLinks) {
+      lines.push(`${l.label}: ${l.url}`);
+    }
+  }
+  return lines.join("\n") || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,11 +184,59 @@ async function handleSingleMessage(
     return;
   }
 
+  // === Check de horario de atención (programático, sin IA) ===
+  const tenant = getTenantById(tenantId);
+  if (tenant) {
+    const hours = parseBusinessHours(tenant.business_hours);
+    if (hours && hours.enabled && !isWithinBusinessHours(hours)) {
+      const oohMsg =
+        tenant.out_of_hours_message ||
+        "¡Gracias por escribir! En este momento estamos cerrados. Te respondemos en nuestro horario de atención.";
+      insertMessage(convo.id, "assistant", oohMsg);
+      await humanDelay(1000, 3000);
+      try {
+        await sock.sendMessage(remoteJid, { text: oohMsg });
+        console.log(`[bot] → Mensaje fuera de horario enviado a ${phone}`);
+      } catch (e) {
+        console.error(`[bot] Error enviando mensaje fuera de horario:`, e);
+      }
+      return;
+    }
+  }
+
+  // === Saludo personalizado en primera interacción (programático, sin IA) ===
   const historyLimit = Math.min(
     Math.max(parseInt(process.env.LLM_HISTORY_MESSAGES || "10", 10) || 10, 4),
     15,
   );
   const history = getRecentHistory(convo.id, historyLimit);
+  const isFirstMessage = history.length === 1;
+
+  if (isFirstMessage && tenant?.custom_greeting) {
+    const greeting = tenant.custom_greeting;
+    insertMessage(convo.id, "assistant", greeting);
+    await humanDelay(1000, 3000);
+    try {
+      await sock.sendMessage(remoteJid, { text: greeting });
+      console.log(`[bot] → Saludo personalizado enviado a ${phone}`);
+    } catch (e) {
+      console.error(`[bot] Error enviando saludo:`, e);
+    }
+
+    // Enviar bloque de links después del saludo (delay humanizado)
+    const linksMsg = buildLinksMessage(tenantId);
+    if (linksMsg) {
+      await humanDelay(800, 2000);
+      insertMessage(convo.id, "assistant", linksMsg);
+      try {
+        await sock.sendMessage(remoteJid, { text: linksMsg });
+        console.log(`[bot] → Links enviados a ${phone}`);
+      } catch (e) {
+        console.error(`[bot] Error enviando links:`, e);
+      }
+    }
+    return; // No llamar al LLM, ya respondimos programáticamente
+  }
 
   // Verificar presupuesto de IA antes de llamar al LLM
   const budget = getLLMBudgetStatus(tenantId);
@@ -175,9 +256,19 @@ async function handleSingleMessage(
   console.log(`[bot] llamando LLM con ${history.length} mensajes...`);
   const t0 = Date.now();
   let llmResponse: LLMResponse;
-  let usage: { model: string; promptTokens: number; completionTokens: number; totalTokens: number; costUsd: number; durationMs: number } | null = null;
+  let usage: {
+    model: string;
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    costUsd: number;
+    durationMs: number;
+  } | null = null;
   try {
-    const result = await generateReply(history, tenantId);
+    const result = await generateReply(history, tenantId, {
+      customerPhone: phone,
+      customerName: pushName,
+    });
     llmResponse = result.response;
     usage = result.usage;
   } catch (err) {
@@ -224,16 +315,17 @@ async function handleSingleMessage(
   }
 
   // Procesar intención del LLM
+  // Nota: si el LLM usó el tool createOrder, el pedido ya fue creado
+  // durante la ejecución del tool. Este bloque es fallback para el
+  // caso donde el LLM responde con intent: "create_order" en JSON.
   if (llmResponse.intent === "create_order" && llmResponse.order_data) {
     try {
       console.log(
-        `[bot] Creando pedido para ${phone} con ${llmResponse.order_data.items.length} items`,
+        `[bot] Fallback: creando pedido para ${phone} con ${llmResponse.order_data.items.length} items`,
       );
 
-      // Resolver precios de productos desde el catálogo
       const products = getActiveProducts(tenantId);
       const items = llmResponse.order_data.items.map((item) => {
-        // Buscar producto por coincidencia parcial del nombre (case-insensitive)
         const itemNameLower = item.name.toLowerCase();
         const matched = products.find(
           (p) =>
@@ -247,7 +339,6 @@ async function handleSingleMessage(
         };
       });
 
-      // Llamada directa a createOrder (más confiable que HTTP)
       const order = await createOrder({
         tenant_id: tenantId,
         customer_phone: phone,
@@ -255,14 +346,18 @@ async function handleSingleMessage(
         items,
         notes: llmResponse.order_data.notes ?? null,
       });
-      console.log(`[bot] Pedido #${order.id} creado exitosamente`);
+      console.log(`[bot] Pedido #${order.id} creado exitosamente (fallback)`);
     } catch (err) {
-      console.error("[bot] Error procesando pedido:", err);
+      console.error("[bot] Error procesando pedido (fallback):", err);
     }
   }
 
   // Guardar y enviar respuesta del LLM
   insertMessage(convo.id, "assistant", llmResponse.reply);
+
+  // Delay aleatorio 1-3s para parecer más humano y evitar detección
+  await humanDelay(1000, 3000);
+  console.log(`[bot] Enviando respuesta LLM a ${phone}...`);
 
   try {
     await sock.sendMessage(remoteJid, { text: llmResponse.reply });
@@ -271,18 +366,19 @@ async function handleSingleMessage(
     console.error(`[bot] Error enviando a ${phone}:`, err);
   }
 
-  // Si es la primera interacción, enviar el catálogo después del saludo
-  const catalogUrl = process.env.CATALOG_URL;
-  if (catalogUrl && history.length === 1) {
-    try {
-      // Pequeña pausa para que no sea tan robótico
-      await new Promise((r) => setTimeout(r, 800));
-      const catalogMsg = `Aquí te dejo nuestro catálogo completo 😋\n\n${catalogUrl}`;
-      await sock.sendMessage(remoteJid, { text: catalogMsg });
-      insertMessage(convo.id, "assistant", catalogMsg);
-      console.log(`[bot] → Catálogo enviado a ${phone}`);
-    } catch (err) {
-      console.error(`[bot] Error enviando catálogo a ${phone}:`, err);
+  // Si es la primera interacción y NO hubo saludo programático,
+  // enviar el bloque de links después de la respuesta del LLM
+  if (isFirstMessage && !tenant?.custom_greeting) {
+    const linksMsg = buildLinksMessage(tenantId);
+    if (linksMsg) {
+      await humanDelay(800, 2000);
+      try {
+        await sock.sendMessage(remoteJid, { text: linksMsg });
+        insertMessage(convo.id, "assistant", linksMsg);
+        console.log(`[bot] → Links enviados a ${phone}`);
+      } catch (err) {
+        console.error(`[bot] Error enviando links a ${phone}:`, err);
+      }
     }
   }
 }
