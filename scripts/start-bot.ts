@@ -27,7 +27,7 @@ let shuttingDown = false;
 async function resetTenant(tenantId: number): Promise<void> {
   console.log(`[bot:${tenantId}] Reset solicitado desde el dashboard`);
   try {
-    await shutdownTenant(tenantId);
+    await shutdownTenant(tenantId, { logout: true });
   } catch (err) {
     console.warn(`[bot:${tenantId}] Error en shutdown:`, err);
   }

@@ -132,6 +132,31 @@ export interface Message {
   created_at: number;
 }
 
+export type ConversationStateName =
+  | "SELECTING_PRODUCTS"
+  | "ASKING_DELIVERY_METHOD"
+  | "ASKING_ADDRESS"
+  | "ASKING_PAYMENT"
+  | "WAITING_CONFIRMATION"
+  | "CONFIRMED";
+
+export interface DraftItem {
+  name: string;
+  quantity: number;
+  price: number;
+}
+
+export interface ConversationState {
+  conversation_id: number;
+  tenant_id: number;
+  state: ConversationStateName;
+  draft_items: DraftItem[];
+  draft_delivery_method: string | null;
+  draft_address: string | null;
+  draft_payment: string | null;
+  updated_at: number;
+}
+
 export interface ConnectionState {
   tenant_id: number;
   status: ConnectionStatus;
@@ -267,6 +292,17 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_outbox_pending
     ON outbox(sent, created_at);
 
+  CREATE TABLE IF NOT EXISTS conversation_state (
+    conversation_id INTEGER PRIMARY KEY REFERENCES conversations(id),
+    tenant_id INTEGER NOT NULL,
+    state TEXT NOT NULL DEFAULT 'SELECTING_PRODUCTS',
+    draft_items TEXT,
+    draft_delivery_method TEXT,
+    draft_address TEXT,
+    draft_payment TEXT,
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+
   CREATE TABLE IF NOT EXISTS products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -312,6 +348,11 @@ function columnExists(table: string, column: string): boolean {
 }
 if (!columnExists("conversations", "jid")) {
   db.exec(`ALTER TABLE conversations ADD COLUMN jid TEXT`);
+}
+if (!columnExists("conversation_state", "draft_delivery_method")) {
+  db.exec(
+    `ALTER TABLE conversation_state ADD COLUMN draft_delivery_method TEXT`,
+  );
 }
 if (!columnExists("outbox", "remote_jid")) {
   db.exec(`ALTER TABLE outbox ADD COLUMN remote_jid TEXT`);
@@ -800,6 +841,98 @@ export function getRecentHistory(
 }
 
 // ---------------------------------------------------------------------------
+// Estado de conversación + draft order
+// ---------------------------------------------------------------------------
+
+const stmtGetConvState = db.prepare<
+  [number],
+  {
+    conversation_id: number;
+    tenant_id: number;
+    state: string;
+    draft_items: string | null;
+    draft_delivery_method: string | null;
+    draft_address: string | null;
+    draft_payment: string | null;
+    updated_at: number;
+  }
+>("SELECT * FROM conversation_state WHERE conversation_id = ?");
+
+export function getConversationState(
+  conversationId: number,
+  tenantId: number,
+): ConversationState {
+  const row = stmtGetConvState.get(conversationId);
+  if (row) {
+    return {
+      conversation_id: row.conversation_id,
+      tenant_id: row.tenant_id,
+      state: row.state as ConversationStateName,
+      draft_items: row.draft_items ? JSON.parse(row.draft_items) : [],
+      draft_delivery_method: row.draft_delivery_method ?? null,
+      draft_address: row.draft_address,
+      draft_payment: row.draft_payment,
+      updated_at: row.updated_at,
+    };
+  }
+  // No existe, crear default
+  const defaultState: ConversationState = {
+    conversation_id: conversationId,
+    tenant_id: tenantId,
+    state: "SELECTING_PRODUCTS",
+    draft_items: [],
+    draft_delivery_method: null,
+    draft_address: null,
+    draft_payment: null,
+    updated_at: Math.floor(Date.now() / 1000),
+  };
+  upsertConversationState(defaultState);
+  return defaultState;
+}
+
+const stmtUpsertConvState = db.prepare<
+  [
+    number,
+    number,
+    string,
+    string | null,
+    string | null,
+    string | null,
+    string | null,
+  ]
+>(
+  `INSERT INTO conversation_state (conversation_id, tenant_id, state, draft_items, draft_delivery_method, draft_address, draft_payment, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+   ON CONFLICT(conversation_id) DO UPDATE SET
+     state = excluded.state,
+     draft_items = excluded.draft_items,
+     draft_delivery_method = excluded.draft_delivery_method,
+     draft_address = excluded.draft_address,
+     draft_payment = excluded.draft_payment,
+     updated_at = unixepoch()`,
+);
+
+export function upsertConversationState(state: ConversationState): void {
+  stmtUpsertConvState.run(
+    state.conversation_id,
+    state.tenant_id,
+    state.state,
+    state.draft_items.length > 0 ? JSON.stringify(state.draft_items) : null,
+    state.draft_delivery_method,
+    state.draft_address,
+    state.draft_payment,
+  );
+}
+
+const stmtClearConvState = db.prepare<[number]>(
+  "DELETE FROM conversation_state WHERE conversation_id = ?",
+);
+
+export function clearConversationState(conversationId: number): void {
+  stmtClearConvState.run(conversationId);
+}
+
+// ---------------------------------------------------------------------------
 // Estado de conexión
 // ---------------------------------------------------------------------------
 
@@ -1075,8 +1208,26 @@ export function searchProducts(
   query: string,
   limit = 10,
 ): Product[] {
-  const pattern = `%${query.toLowerCase()}%`;
-  return stmtSearchProducts.all(tenantId, pattern, pattern, limit);
+  const words = query
+    .toLowerCase()
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length >= 2)
+    .map((w) => (w.endsWith("s") && w.length > 3 ? w.slice(0, -1) : w));
+  if (words.length === 0) {
+    const pattern = `%${query.toLowerCase()}%`;
+    return stmtSearchProducts.all(tenantId, pattern, pattern, limit);
+  }
+  // Build WHERE clause: each word must match name OR description (LIKE)
+  const conditions: string[] = [];
+  const params: (string | number)[] = [tenantId];
+  for (const word of words) {
+    conditions.push("(LOWER(name) LIKE ? OR LOWER(description) LIKE ?)");
+    params.push(`%${word}%`, `%${word}%`);
+  }
+  params.push(limit);
+  const sql = `SELECT * FROM products WHERE tenant_id = ? AND active = 1 AND ${conditions.join(" AND ")} ORDER BY name ASC LIMIT ?`;
+  return db.prepare(sql).all(...params) as Product[];
 }
 
 const stmtGetProductByName = db.prepare<[number, string], Product>(
@@ -1087,8 +1238,8 @@ export function getProductByName(
   tenantId: number,
   name: string,
 ): Product | null {
-  const pattern = `%${name.toLowerCase()}%`;
-  return stmtGetProductByName.get(tenantId, pattern) ?? null;
+  const results = searchProducts(tenantId, name, 1);
+  return results[0] ?? null;
 }
 
 const stmtGetProductStock = db.prepare<
@@ -1102,8 +1253,9 @@ export function getProductStock(
   tenantId: number,
   name: string,
 ): { id: number; name: string; stock: number } | null {
-  const pattern = `%${name.toLowerCase()}%`;
-  return stmtGetProductStock.get(tenantId, pattern) ?? null;
+  const results = searchProducts(tenantId, name, 1);
+  if (results.length === 0) return null;
+  return { id: results[0].id, name: results[0].name, stock: results[0].stock };
 }
 
 const stmtDecrementStock = db.prepare<[number, number, number]>(
@@ -1916,6 +2068,26 @@ export function getOrderById(
   if (!order) return null;
 
   const items = stmtGetOrderItems.all(orderId) as OrderItem[];
+  return { ...order, items };
+}
+
+// Obtener el último pedido de un cliente por teléfono
+export function getLastOrderByPhone(
+  tenantId: number,
+  customerPhone: string,
+): (Order & { items: OrderItem[] }) | null {
+  const order = db
+    .prepare<[number, string], Order>(
+      `SELECT * FROM orders
+       WHERE tenant_id = ? AND customer_phone = ?
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    )
+    .get(tenantId, customerPhone);
+
+  if (!order) return null;
+
+  const items = stmtGetOrderItems.all(order.id) as OrderItem[];
   return { ...order, items };
 }
 

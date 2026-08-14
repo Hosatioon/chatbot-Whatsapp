@@ -6,9 +6,10 @@ import {
   getProductByName,
   getProductStock,
   getTenantById,
+  getLastOrderByPhone,
   type Message,
 } from "./db";
-import { createOrder } from "./events";
+import type { ConversationState } from "./conversation-state";
 
 // IMPORTANTE: este módulo lee process.env en top-level. En el proceso del
 // bot necesita que `scripts/env-loader.ts` ya haya corrido antes (se importa
@@ -49,22 +50,21 @@ function mapHistory(
   }));
 }
 
-function buildSystemPrompt(tenantId: number): string {
-  const basePrompt = buildSystemPromptForTenant(tenantId);
+function buildSystemPrompt(
+  tenantId: number,
+  conversationState?: ConversationState,
+): string {
+  const basePrompt = buildSystemPromptForTenant(tenantId, conversationState);
   // Inyectar solo top 10 productos como referencia rápida
   const top = getTopProducts(tenantId, 10);
   let catalog = "";
   if (top.length > 0) {
-    catalog = "\n\n--- PRODUCTOS PRINCIPALES ---\n";
+    catalog = "\n\n--- PRODUCTOS PRINCIPALES (solo nombres) ---\n";
     for (const p of top) {
-      catalog += `- ${p.name}: ${new Intl.NumberFormat("es-CO", {
-        style: "currency",
-        currency: "COP",
-        minimumFractionDigits: 0,
-      }).format(p.price)} (stock: ${p.stock})\n`;
+      catalog += `- ${p.name}\n`;
     }
     catalog +=
-      "\nEsta lista es PARCIAL (no incluye todos los productos). Usá searchProducts para buscar productos que no estén aquí.\n";
+      "\nEsta lista es PARCIAL. Para precios y stock, usá searchProducts o getStock.\n";
   }
   return basePrompt + catalog;
 }
@@ -91,7 +91,7 @@ export interface LLMUsage {
   durationMs: number;
 }
 
-const MAX_TOKENS = parseInt(process.env.LLM_MAX_TOKENS || "350", 10);
+const MAX_TOKENS = parseInt(process.env.LLM_MAX_TOKENS || "600", 10);
 
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   "openai/gpt-4o-mini": { input: 0.15, output: 0.6 },
@@ -131,6 +131,7 @@ function estimateCost(
 export interface GenerateReplyContext {
   customerPhone?: string;
   customerName?: string | null;
+  conversationState?: ConversationState;
 }
 
 /**
@@ -166,7 +167,15 @@ export async function generateReply(
   ctx?: GenerateReplyContext,
 ): Promise<{ response: LLMResponse; usage: LLMUsage }> {
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: "system", content: buildSystemPrompt(tenantId) },
+    {
+      role: "system",
+      content: buildSystemPrompt(tenantId, ctx?.conversationState),
+    },
+    {
+      role: "system",
+      content:
+        "RECORDATORIO: Tu respuesta DEBE ser un JSON válido con los campos intent, reply y (opcionalmente) order_data. No respondas texto plano.",
+    },
     ...mapHistory(history),
   ];
 
@@ -231,34 +240,10 @@ export async function generateReply(
     {
       type: "function",
       function: {
-        name: "createOrder",
+        name: "getOrderStatus",
         description:
-          "Crear un pedido cuando el cliente confirme. Valida stock automáticamente.",
-        parameters: {
-          type: "object",
-          properties: {
-            items: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  name: {
-                    type: "string",
-                    description: "Nombre exacto del producto",
-                  },
-                  quantity: { type: "number", description: "Cantidad" },
-                },
-                required: ["name", "quantity"],
-              },
-            },
-            notes: {
-              type: "string",
-              description:
-                "Notas del pedido: dirección de entrega, método de pago",
-            },
-          },
-          required: ["items"],
-        },
+          "Consultar el estado del último pedido del cliente. Úsala cuando el cliente pregunte por su pedido.",
+        parameters: { type: "object", properties: {} },
       },
     },
   ];
@@ -273,7 +258,12 @@ export async function generateReply(
     tool_choice: "auto",
     temperature: 0.7,
     max_tokens: MAX_TOKENS,
+    response_format: { type: "json_object" },
   });
+
+  console.log(
+    `[openrouter] LLM response: tool_calls=${completion.choices[0]?.message?.tool_calls?.length ?? 0}, content_len=${completion.choices[0]?.message?.content?.length ?? 0}`,
+  );
 
   totalPromptTokens += completion.usage?.prompt_tokens ?? 0;
   totalCompletionTokens += completion.usage?.completion_tokens ?? 0;
@@ -299,8 +289,12 @@ export async function generateReply(
       let result: string;
       try {
         result = await executeTool(fnName, args, tenantId, ctx);
+        console.log(
+          `[openrouter] tool ${fnName}(${JSON.stringify(args)}) → ${result.slice(0, 200)}`,
+        );
       } catch (err) {
         result = JSON.stringify({ error: (err as Error).message });
+        console.error(`[openrouter] tool ${fnName} error:`, err);
       }
 
       messages.push({
@@ -318,6 +312,7 @@ export async function generateReply(
       tool_choice: "auto",
       temperature: 0.7,
       max_tokens: MAX_TOKENS,
+      response_format: { type: "json_object" },
     });
 
     totalPromptTokens += completion.usage?.prompt_tokens ?? 0;
@@ -424,38 +419,33 @@ async function executeTool(
         catalog_url: tenant.catalog_url,
       });
     }
-    case "createOrder": {
-      const items =
-        (args.items as Array<{ name: string; quantity: number }>) ?? [];
-      const notes = args.notes ? String(args.notes) : undefined;
-      // Resolver precios desde la DB
-      const orderItems = items.map((item) => {
-        const product = getProductByName(tenantId, item.name);
-        return {
-          product_name: product?.name ?? item.name,
-          quantity: item.quantity,
-          unit_price: product?.price ?? 0,
-        };
+    case "getOrderStatus": {
+      const phone = ctx?.customerPhone;
+      if (!phone)
+        return JSON.stringify({ error: "No se puede consultar el pedido" });
+      const order = getLastOrderByPhone(tenantId, phone);
+      if (!order) return JSON.stringify({ error: "No hay pedidos recientes" });
+
+      const statusMap: Record<string, string> = {
+        PENDING: "Pendiente — aún no ha sido confirmado por el negocio",
+        CONFIRMED: "Confirmado — el negocio ya lo recibió y lo va a preparar",
+        PREPARING: "Preparando — están armando tu pedido",
+        ON_THE_WAY: "En camino — tu pedido ya salió y llegará pronto",
+        DELIVERED: "Entregado — tu pedido ya fue entregado",
+        CANCELLED: "Cancelado",
+      };
+
+      return JSON.stringify({
+        order_id: order.id,
+        status: order.status,
+        status_description: statusMap[order.status] ?? order.status,
+        total: order.total_amount,
+        items: order.items.map(
+          (i: { quantity: number; product_name: string }) =>
+            `${i.quantity}x ${i.product_name}`,
+        ),
+        notes: order.notes,
       });
-      try {
-        const order = await createOrder({
-          tenant_id: tenantId,
-          customer_phone: ctx?.customerPhone ?? "whatsapp",
-          customer_name: ctx?.customerName ?? null,
-          items: orderItems,
-          notes: notes ?? null,
-        });
-        return JSON.stringify({
-          success: true,
-          order_id: order.id,
-          total: (order as { total_amount?: number }).total_amount ?? 0,
-        });
-      } catch (err) {
-        return JSON.stringify({
-          success: false,
-          error: (err as Error).message,
-        });
-      }
     }
     default:
       return JSON.stringify({ error: `Tool desconocido: ${name}` });

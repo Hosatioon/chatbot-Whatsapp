@@ -14,6 +14,9 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
+# Patch whatsapp-rust-bridge: add CJS exports fields (fix for ERR_PACKAGE_PATH_NOT_EXPORTED)
+RUN node -e "const fs=require('fs');const p='/app/node_modules/whatsapp-rust-bridge/package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));if(j.exports&&j.exports['.']){const e=j.exports['.'];if(!e.require){e.require=e.import||'./dist/index.js';}if(!e.default){e.default=e.import||'./dist/index.js';}if(!j.main){j.main=e.import||'./dist/index.js';}fs.writeFileSync(p,JSON.stringify(j,null,2));console.log('patched whatsapp-rust-bridge exports');}"
+
 # Copiar el resto del código (sin necesidad de build de Next.js)
 COPY . .
 

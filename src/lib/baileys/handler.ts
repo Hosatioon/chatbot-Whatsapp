@@ -18,8 +18,22 @@ import {
 } from "../db";
 import { generateReply, type LLMResponse } from "../openrouter";
 import { createOrder } from "../events";
-import { getActiveProducts } from "../db";
 import { checkAndRecord } from "../rate-limit";
+import {
+  getStateForConversation,
+  saveState,
+  resetState,
+  computeStateFromDraft,
+  tryAddProductsFromText,
+  detectDeliveryMethod,
+  detectPaymentMethod,
+  looksLikeAddress,
+  isConfirmation,
+  isCancellation,
+  isDoneSelecting,
+  computeDraftTotal,
+  type ConversationState,
+} from "../conversation-state";
 
 // Limpieza periódica del registro de eventos para rate limiting
 let lastPurge = 0;
@@ -253,6 +267,196 @@ async function handleSingleMessage(
     return;
   }
 
+  // === Máquina de estados: procesar mensaje del cliente antes del LLM ===
+  const convState = getStateForConversation(convo.id, tenantId);
+  console.log(
+    `[bot:${tenantId}] Estado conversación: ${convState.state}, items=${convState.draft_items.length}, delivery=${convState.draft_delivery_method ?? "no"}, addr=${convState.draft_address ? "sí" : "no"}, pay=${convState.draft_payment ?? "no"}`,
+  );
+
+  // Detectar cancelación
+  if (isCancellation(text)) {
+    resetState(convo.id);
+    convState.draft_items = [];
+    convState.draft_delivery_method = null;
+    convState.draft_address = null;
+    convState.draft_payment = null;
+    convState.state = "SELECTING_PRODUCTS";
+    console.log(`[bot:${tenantId}] Cliente canceló, estado reseteado`);
+  }
+
+  // Procesar según el estado actual
+  if (convState.state === "SELECTING_PRODUCTS") {
+    // Intentar extraer productos del mensaje
+    const { added, products } = tryAddProductsFromText(convState, text);
+    if (added) {
+      console.log(
+        `[bot:${tenantId}] Productos agregados al draft: ${products.map((p) => `${p.quantity}x ${p.name}`).join(", ")}`,
+      );
+    }
+    // Si el cliente dice que no quiere nada más y ya tiene items, avanzar
+    if (isDoneSelecting(text) && convState.draft_items.length > 0) {
+      convState.state = "ASKING_DELIVERY_METHOD";
+      console.log(
+        `[bot:${tenantId}] Cliente terminó de seleccionar, pasando a ASKING_DELIVERY_METHOD`,
+      );
+    }
+  } else if (convState.state === "ASKING_DELIVERY_METHOD") {
+    const delivery = detectDeliveryMethod(text);
+    if (delivery) {
+      convState.draft_delivery_method = delivery;
+      console.log(
+        `[bot:${tenantId}] Método de entrega: ${convState.draft_delivery_method}`,
+      );
+      if (delivery === "recoger") {
+        // Skip address, go straight to payment
+        convState.state = "ASKING_PAYMENT";
+      } else {
+        convState.state = "ASKING_ADDRESS";
+      }
+    }
+  } else if (convState.state === "ASKING_ADDRESS") {
+    if (looksLikeAddress(text)) {
+      convState.draft_address = text.trim();
+      console.log(
+        `[bot:${tenantId}] Dirección guardada: ${convState.draft_address}`,
+      );
+    }
+  } else if (convState.state === "ASKING_PAYMENT") {
+    const payment = detectPaymentMethod(text);
+    if (payment) {
+      convState.draft_payment = payment;
+      console.log(
+        `[bot:${tenantId}] Pago guardado: ${convState.draft_payment}`,
+      );
+    }
+  } else if (convState.state === "WAITING_CONFIRMATION") {
+    if (isConfirmation(text)) {
+      // Crear pedido directamente desde el draft
+      convState.state = "CONFIRMED";
+      try {
+        const order = await createOrder({
+          tenant_id: tenantId,
+          customer_phone: phone,
+          customer_name: pushName,
+          items: convState.draft_items.map((item) => ({
+            product_name: item.name,
+            quantity: item.quantity,
+            unit_price: item.price,
+          })),
+          notes: `Entrega: ${convState.draft_address ?? "a convenir"}. Pago: ${convState.draft_payment ?? "a definir"}.`,
+        });
+        console.log(
+          `[bot:${tenantId}] Pedido #${order.id} creado desde estado`,
+        );
+
+        // Guardar estado confirmado
+        saveState(convState);
+
+        // Enviar confirmación con datos de pago según método
+        const total = computeDraftTotal(convState.draft_items);
+        const paymentInfo = tenant?.payment_info || "";
+        let confirmMsg: string;
+        if (convState.draft_payment === "efectivo") {
+          confirmMsg = `¡Pedido confirmado! 🎉\n\nTotal: $${total.toLocaleString("es-CO")}\n\nPago en efectivo. Tene listo el monto exacto para la entrega 😋\n\n¿Algo más en lo que te pueda ayudar?`;
+        } else {
+          confirmMsg = `¡Pedido confirmado! 🎉\n\nTotal: $${total.toLocaleString("es-CO")}\n\n${paymentInfo}\n\nMandame el comprobante cuando transfieras y te aviso cuando esté listo 😋`;
+        }
+
+        insertMessage(convo.id, "assistant", confirmMsg);
+        await humanDelay(1000, 3000);
+        try {
+          await sock.sendMessage(remoteJid, { text: confirmMsg });
+          console.log(`[bot] → Confirmación de pedido enviada a ${phone}`);
+        } catch (e) {
+          console.error(`[bot] Error enviando confirmación:`, e);
+        }
+
+        // Limpiar estado después de crear el pedido
+        resetState(convo.id);
+        return;
+      } catch (err) {
+        console.error(
+          `[bot:${tenantId}] Error creando pedido desde estado:`,
+          err,
+        );
+        // Si falla, dejar que el LLM maneje el error
+        convState.state = "WAITING_CONFIRMATION";
+      }
+    }
+  }
+
+  // Recalcular estado basado en draft
+  computeStateFromDraft(convState);
+  saveState(convState);
+  console.log(`[bot:${tenantId}] Estado actualizado: ${convState.state}`);
+
+  // === Si el estado avanzó, generar respuesta directamente sin LLM ===
+  if (convState.state === "ASKING_DELIVERY_METHOD" && isDoneSelecting(text)) {
+    const msg = "¿Es para domicilio o lo recogés en tienda?";
+    insertMessage(convo.id, "assistant", msg);
+    await humanDelay(1000, 2000);
+    try {
+      await sock.sendMessage(remoteJid, { text: msg });
+    } catch (e) {
+      console.error(`[bot] Error enviando pregunta entrega:`, e);
+    }
+    return;
+  }
+
+  if (convState.state === "ASKING_ADDRESS" && convState.draft_delivery_method) {
+    const msg = "¿Cuál es la dirección de entrega?";
+    insertMessage(convo.id, "assistant", msg);
+    await humanDelay(1000, 2000);
+    try {
+      await sock.sendMessage(remoteJid, { text: msg });
+    } catch (e) {
+      console.error(`[bot] Error enviando pregunta dirección:`, e);
+    }
+    return;
+  }
+
+  if (
+    convState.state === "ASKING_PAYMENT" &&
+    (convState.draft_delivery_method === "recoger" || convState.draft_address)
+  ) {
+    const msg = "¿Transferencia o efectivo?";
+    insertMessage(convo.id, "assistant", msg);
+    await humanDelay(1000, 2000);
+    try {
+      await sock.sendMessage(remoteJid, { text: msg });
+    } catch (e) {
+      console.error(`[bot] Error enviando pregunta pago:`, e);
+    }
+    return;
+  }
+
+  if (convState.state === "WAITING_CONFIRMATION" && convState.draft_payment) {
+    // Mostrar resumen y pedir confirmación
+    const lines: string[] = [];
+    for (const item of convState.draft_items) {
+      const subtotal = item.price * item.quantity;
+      lines.push(
+        `${item.quantity} ${item.name} — $${subtotal.toLocaleString("es-CO")}`,
+      );
+    }
+    const total = computeDraftTotal(convState.draft_items);
+    const delivery =
+      convState.draft_delivery_method === "recoger"
+        ? "Recoger en tienda"
+        : `Domicilio: ${convState.draft_address}`;
+    const payment =
+      convState.draft_payment === "efectivo" ? "Efectivo" : "Transferencia";
+    const msg = `Perfecto, tu pedido sería:\n\n${lines.join("\n")}\nTotal: $${total.toLocaleString("es-CO")}\nEntrega: ${delivery}\nPago: ${payment}\n\n¿Confirmas el pedido?`;
+    insertMessage(convo.id, "assistant", msg);
+    await humanDelay(1000, 2000);
+    try {
+      await sock.sendMessage(remoteJid, { text: msg });
+    } catch (e) {
+      console.error(`[bot] Error enviando resumen:`, e);
+    }
+    return;
+  }
+
   console.log(`[bot] llamando LLM con ${history.length} mensajes...`);
   const t0 = Date.now();
   let llmResponse: LLMResponse;
@@ -268,6 +472,7 @@ async function handleSingleMessage(
     const result = await generateReply(history, tenantId, {
       customerPhone: phone,
       customerName: pushName,
+      conversationState: convState,
     });
     llmResponse = result.response;
     usage = result.usage;
@@ -314,45 +519,22 @@ async function handleSingleMessage(
     );
   }
 
-  // Procesar intención del LLM
-  // Nota: si el LLM usó el tool createOrder, el pedido ya fue creado
-  // durante la ejecución del tool. Este bloque es fallback para el
-  // caso donde el LLM responde con intent: "create_order" en JSON.
-  if (llmResponse.intent === "create_order" && llmResponse.order_data) {
-    try {
-      console.log(
-        `[bot] Fallback: creando pedido para ${phone} con ${llmResponse.order_data.items.length} items`,
-      );
-
-      const products = getActiveProducts(tenantId);
-      const items = llmResponse.order_data.items.map((item) => {
-        const itemNameLower = item.name.toLowerCase();
-        const matched = products.find(
-          (p) =>
-            p.name.toLowerCase().includes(itemNameLower) ||
-            itemNameLower.includes(p.name.toLowerCase()),
-        );
-        return {
-          product_name: matched?.name ?? item.name,
-          quantity: item.quantity,
-          unit_price: matched?.price ?? 0,
-        };
-      });
-
-      const order = await createOrder({
-        tenant_id: tenantId,
-        customer_phone: phone,
-        customer_name: pushName,
-        items,
-        notes: llmResponse.order_data.notes ?? null,
-      });
-      console.log(`[bot] Pedido #${order.id} creado exitosamente (fallback)`);
-    } catch (err) {
-      console.error("[bot] Error procesando pedido (fallback):", err);
+  // Si estamos en SELECTING_PRODUCTS con items y el LLM no preguntó "algo más", forzarlo
+  if (
+    convState.state === "SELECTING_PRODUCTS" &&
+    convState.draft_items.length > 0 &&
+    llmResponse.intent !== "create_order"
+  ) {
+    const replyLower = llmResponse.reply.toLowerCase();
+    if (
+      !replyLower.includes("algo más") &&
+      !replyLower.includes("algo mas") &&
+      !replyLower.includes("algo más?")
+    ) {
+      llmResponse.reply += " ¿Querés algo más?";
     }
   }
 
-  // Guardar y enviar respuesta del LLM
   insertMessage(convo.id, "assistant", llmResponse.reply);
 
   // Delay aleatorio 1-3s para parecer más humano y evitar detección
@@ -368,9 +550,13 @@ async function handleSingleMessage(
 
   // Si es la primera interacción y NO hubo saludo programático,
   // enviar el bloque de links después de la respuesta del LLM
+  // (solo si el LLM no incluyó el catálogo en su respuesta)
   if (isFirstMessage && !tenant?.custom_greeting) {
     const linksMsg = buildLinksMessage(tenantId);
-    if (linksMsg) {
+    const catalogUrl = tenant?.catalog_url || "";
+    const llmAlreadySentCatalog =
+      catalogUrl && llmResponse.reply.includes(catalogUrl);
+    if (linksMsg && !llmAlreadySentCatalog) {
       await humanDelay(800, 2000);
       try {
         await sock.sendMessage(remoteJid, { text: linksMsg });

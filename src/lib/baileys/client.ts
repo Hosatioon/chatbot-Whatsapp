@@ -60,6 +60,7 @@ export interface BaileysHandle {
   tenantId: number;
   sock: WASocket;
   shutdown: () => Promise<void>;
+  logout: () => Promise<void>;
 }
 
 interface TenantState {
@@ -70,6 +71,8 @@ interface TenantState {
   reconnectCount: number;
   qrTimer: NodeJS.Timeout | null;
   qrGeneratedAt: number | null;
+  rapidCloseCount: number;
+  lastConnectTs: number | null;
 }
 
 const tenants = new Map<number, TenantState>();
@@ -85,6 +88,8 @@ function getOrCreateState(tenantId: number): TenantState {
       reconnectCount: 0,
       qrTimer: null,
       qrGeneratedAt: null,
+      rapidCloseCount: 0,
+      lastConnectTs: null,
     };
     tenants.set(tenantId, s);
   }
@@ -138,6 +143,18 @@ async function start(tenantId: number): Promise<void> {
     tenantId,
     sock,
     shutdown: async () => {
+      try {
+        sock.end(undefined);
+      } catch {
+        /* ignore */
+      }
+    },
+    logout: async () => {
+      try {
+        await sock.logout();
+      } catch {
+        /* ignore */
+      }
       try {
         sock.end(undefined);
       } catch {
@@ -206,6 +223,7 @@ async function start(tenantId: number): Promise<void> {
       const phone = extractPhoneFromJid(sock.user?.id);
       console.log(`[bot:${tenantId}] Conectado como ${phone ?? "(sin id)"}`);
       state.reconnectCount = 0; // reset al conectar exitosamente
+      state.lastConnectTs = Date.now();
       // Limpiar timer de QR si estaba activo
       if (state.qrTimer) {
         clearTimeout(state.qrTimer);
@@ -225,6 +243,36 @@ async function start(tenantId: number): Promise<void> {
         boom?.output?.statusCode ??
         (lastDisconnect?.error as { code?: number } | undefined)?.code;
       console.log(`[bot:${tenantId}] Conexión cerrada. code=${code}`);
+
+      // Detectar bucle de reconexión: si conectó y se cerró en menos de 10s
+      if (state.lastConnectTs && Date.now() - state.lastConnectTs < 10000) {
+        state.rapidCloseCount++;
+        console.warn(
+          `[bot:${tenantId}] Cierre rápido detectado (${state.rapidCloseCount}/5). Sesión posiblemente corrupta.`,
+        );
+      } else {
+        state.rapidCloseCount = 0;
+      }
+
+      // Si hay 5 cierres rápidos seguidos, borrar sesión y detener reconexión
+      if (state.rapidCloseCount >= 5) {
+        console.error(
+          `[bot:${tenantId}] Bucle de reconexión detectado. Borrando sesión y deteniendo.`,
+        );
+        state.rapidCloseCount = 0;
+        state.lastConnectTs = null;
+        try {
+          fs.rmSync(authDir, { recursive: true, force: true });
+        } catch (err) {
+          console.warn(`[bot:${tenantId}] No se pudo borrar auth/:`, err);
+        }
+        setConnectionState(tenantId, {
+          status: "disconnected",
+          qr_string: null,
+          phone: null,
+        });
+        return;
+      }
 
       if (code === DisconnectReason.loggedOut) {
         console.log(
@@ -354,7 +402,10 @@ export function listActiveTenants(): number[] {
   return Array.from(tenants.keys());
 }
 
-export async function shutdownTenant(tenantId: number): Promise<void> {
+export async function shutdownTenant(
+  tenantId: number,
+  options?: { logout?: boolean },
+): Promise<void> {
   const state = tenants.get(tenantId);
   if (!state) return;
   if (state.reconnectTimer) {
@@ -370,7 +421,11 @@ export async function shutdownTenant(tenantId: number): Promise<void> {
     state.qrTimer = null;
   }
   if (state.handle) {
-    await state.handle.shutdown();
+    if (options?.logout) {
+      await state.handle.logout();
+    } else {
+      await state.handle.shutdown();
+    }
     state.handle = null;
   }
   tenants.delete(tenantId);
