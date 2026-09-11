@@ -72,6 +72,8 @@ export interface Order {
   notes: string | null;
   cancel_reason: string | null;
   deleted_at: number | null;
+  delivery_lat: number | null;
+  delivery_lng: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -83,6 +85,13 @@ export interface OrderItem {
   quantity: number;
   unit_price: number;
   total_price: number;
+}
+
+export interface DeliveryZone {
+  id: number;
+  tenant_id: number;
+  zone_name: string;
+  price: number;
 }
 
 export interface Tenant {
@@ -102,6 +111,18 @@ export interface Tenant {
   business_hours: string | null;
   out_of_hours_message: string | null;
   extra_links: string | null;
+  feedback_message: string | null;
+  admin_phone: string | null;
+  delivery_price: number | null;
+  business_location_url: string | null;
+  business_lat: number | null;
+  business_lng: number | null;
+  price_per_km: number | null;
+  max_delivery_km: number | null;
+  min_order_amount: number | null;
+  min_delivery_price: number | null;
+  bot_paused: number;
+  paused_message: string | null;
   created_at: number;
 }
 
@@ -114,6 +135,7 @@ export interface Conversation {
   // (donde el "phone" guardado no se puede convertir a un JID público).
   // Null para conversaciones legacy creadas antes de la migración.
   jid: string | null;
+  real_phone: string | null;
   name: string | null;
   mode: Mode;
   last_message_at: number | null;
@@ -152,7 +174,11 @@ export interface ConversationState {
   state: ConversationStateName;
   draft_items: DraftItem[];
   draft_delivery_method: string | null;
+  draft_delivery_zone: string | null;
+  draft_delivery_price: number | null;
   draft_address: string | null;
+  draft_lat: number | null;
+  draft_lng: number | null;
   draft_payment: string | null;
   updated_at: number;
 }
@@ -298,6 +324,8 @@ db.exec(`
     state TEXT NOT NULL DEFAULT 'SELECTING_PRODUCTS',
     draft_items TEXT,
     draft_delivery_method TEXT,
+    draft_delivery_zone TEXT,
+    draft_delivery_price INTEGER,
     draft_address TEXT,
     draft_payment TEXT,
     updated_at INTEGER NOT NULL DEFAULT (unixepoch())
@@ -354,6 +382,14 @@ if (!columnExists("conversation_state", "draft_delivery_method")) {
     `ALTER TABLE conversation_state ADD COLUMN draft_delivery_method TEXT`,
   );
 }
+if (!columnExists("conversation_state", "draft_delivery_zone")) {
+  db.exec(`ALTER TABLE conversation_state ADD COLUMN draft_delivery_zone TEXT`);
+}
+if (!columnExists("conversation_state", "draft_delivery_price")) {
+  db.exec(
+    `ALTER TABLE conversation_state ADD COLUMN draft_delivery_price INTEGER`,
+  );
+}
 if (!columnExists("outbox", "remote_jid")) {
   db.exec(`ALTER TABLE outbox ADD COLUMN remote_jid TEXT`);
 }
@@ -399,6 +435,15 @@ db.exec(`
     FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
   );
   CREATE INDEX IF NOT EXISTS idx_order_history_order ON order_history(order_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS delivery_zones (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL,
+    zone_name TEXT NOT NULL,
+    price INTEGER NOT NULL,
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_delivery_zones_tenant ON delivery_zones(tenant_id);
 `);
 
 // Migración: cancel_reason en orders
@@ -480,6 +525,14 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_msg_events_phone_time
     ON message_events(tenant_id, phone, created_at DESC);
+`);
+
+// Dedup persistente de mensajes de WhatsApp (sobrevive reinicios del proceso)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS processed_messages (
+    msg_id TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
 `);
 
 // ---------------------------------------------------------------------------
@@ -628,6 +681,51 @@ if (!hasColumn("tenants", "out_of_hours_message")) {
 if (!hasColumn("tenants", "extra_links")) {
   db.exec("ALTER TABLE tenants ADD COLUMN extra_links TEXT");
 }
+if (!hasColumn("tenants", "feedback_message")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN feedback_message TEXT");
+}
+if (!hasColumn("tenants", "admin_phone")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN admin_phone TEXT");
+}
+if (!hasColumn("tenants", "delivery_price")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN delivery_price INTEGER");
+}
+if (!hasColumn("tenants", "business_location_url")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN business_location_url TEXT");
+}
+if (!hasColumn("tenants", "business_lat")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN business_lat REAL");
+}
+if (!hasColumn("tenants", "business_lng")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN business_lng REAL");
+}
+if (!hasColumn("tenants", "price_per_km")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN price_per_km INTEGER");
+}
+if (!hasColumn("tenants", "max_delivery_km")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN max_delivery_km REAL");
+}
+if (!hasColumn("tenants", "min_order_amount")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN min_order_amount INTEGER");
+}
+if (!hasColumn("tenants", "min_delivery_price")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN min_delivery_price INTEGER");
+}
+if (!hasColumn("tenants", "bot_paused")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN bot_paused INTEGER NOT NULL DEFAULT 0");
+}
+if (!hasColumn("tenants", "paused_message")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN paused_message TEXT");
+}
+if (!columnExists("conversation_state", "draft_lat")) {
+  db.exec("ALTER TABLE conversation_state ADD COLUMN draft_lat REAL");
+}
+if (!columnExists("conversation_state", "draft_lng")) {
+  db.exec("ALTER TABLE conversation_state ADD COLUMN draft_lng REAL");
+}
+if (!hasColumn("conversations", "real_phone")) {
+  db.exec("ALTER TABLE conversations ADD COLUMN real_phone TEXT");
+}
 if (!hasColumn("tenant_plans", "trial_end_date")) {
   db.exec("ALTER TABLE tenant_plans ADD COLUMN trial_end_date INTEGER");
 }
@@ -692,6 +790,59 @@ if (hasUniqueConstraint("products")) {
   `);
 }
 
+// Tabla de lugares conocidos por negocio (aprendizaje automático de direcciones)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS known_places (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    aliases TEXT,
+    lat REAL NOT NULL,
+    lng REAL NOT NULL,
+    times_used INTEGER DEFAULT 1,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    source TEXT NOT NULL DEFAULT 'confirmed',
+    UNIQUE(tenant_id, name)
+  );
+  CREATE INDEX IF NOT EXISTS idx_known_places_tenant ON known_places(tenant_id);
+`);
+// BUG real encontrado (2026-09-10): un lugar cargado masivamente desde datos
+// oficiales (aproximado, sin verificar) se resolvía sin pedir confirmación,
+// igual que uno aprendido de un pedido real ya confirmado — un cliente dijo
+// explícitamente "no es ese, es el barrio" y el pedido igual se guardó con
+// la dirección equivocada. `source` distingue 'confirmed' (aprendido de un
+// pedido real, alta confianza, no hace falta reconfirmar) de 'bulk_import'
+// (carga masiva, se debe confirmar igual que una búsqueda ambigua).
+if (!hasColumn("known_places", "source")) {
+  db.exec(
+    "ALTER TABLE known_places ADD COLUMN source TEXT NOT NULL DEFAULT 'confirmed'",
+  );
+}
+
+// Tabla de direcciones frecuentes por cliente
+db.exec(`
+  CREATE TABLE IF NOT EXISTS customer_addresses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL,
+    phone TEXT NOT NULL,
+    address TEXT NOT NULL,
+    reference TEXT NOT NULL,
+    lat REAL NOT NULL,
+    lng REAL NOT NULL,
+    last_used_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    UNIQUE(tenant_id, phone)
+  );
+  CREATE INDEX IF NOT EXISTS idx_customer_addresses_tenant_phone ON customer_addresses(tenant_id, phone);
+`);
+
+// Columnas de coordenadas de entrega en orders
+if (!hasColumn("orders", "delivery_lat")) {
+  db.exec("ALTER TABLE orders ADD COLUMN delivery_lat REAL");
+}
+if (!hasColumn("orders", "delivery_lng")) {
+  db.exec("ALTER TABLE orders ADD COLUMN delivery_lng REAL");
+}
+
 export default db;
 
 // Migración: los productos importados con stock 0 quedaban inactivos
@@ -707,15 +858,21 @@ const stmtGetConvoByPhone = db.prepare<[number, string], Conversation>(
   "SELECT * FROM conversations WHERE tenant_id = ? AND phone = ?",
 );
 const stmtInsertConvo = db.prepare<
-  [number, string, string | null, string | null]
+  [number, string, string | null, string | null, string | null]
 >(
-  "INSERT INTO conversations (tenant_id, phone, name, jid) VALUES (?, ?, ?, ?)",
+  "INSERT INTO conversations (tenant_id, phone, name, jid, real_phone) VALUES (?, ?, ?, ?, ?)",
 );
 const stmtUpdateConvoName = db.prepare<[string, number]>(
   "UPDATE conversations SET name = ? WHERE id = ?",
 );
 const stmtUpdateConvoJid = db.prepare<[string, number]>(
   "UPDATE conversations SET jid = ? WHERE id = ?",
+);
+const stmtUpdateConvoRealPhone = db.prepare<[string, number]>(
+  "UPDATE conversations SET real_phone = ? WHERE id = ?",
+);
+const stmtFindConvoByRealPhone = db.prepare<[number, string], Conversation>(
+  "SELECT * FROM conversations WHERE tenant_id = ? AND real_phone = ?",
 );
 const stmtGetConvoById = db.prepare<[number], Conversation>(
   "SELECT * FROM conversations WHERE id = ?",
@@ -729,6 +886,7 @@ export function getOrCreateConversation(
   phone: string,
   name?: string | null,
   jid?: string | null,
+  realPhone?: string | null,
 ): Conversation {
   const existing = stmtGetConvoByPhone.get(tenantId, phone);
   if (existing) {
@@ -741,12 +899,51 @@ export function getOrCreateConversation(
       stmtUpdateConvoJid.run(jid, existing.id);
       updated = { ...updated, jid };
     }
+    if (realPhone && realPhone !== existing.real_phone) {
+      stmtUpdateConvoRealPhone.run(realPhone, existing.id);
+      updated = { ...updated, real_phone: realPhone };
+    }
     return updated;
   }
-  const info = stmtInsertConvo.run(tenantId, phone, name ?? null, jid ?? null);
+  const info = stmtInsertConvo.run(
+    tenantId,
+    phone,
+    name ?? null,
+    jid ?? null,
+    realPhone ?? null,
+  );
   const created = stmtGetConvoById.get(Number(info.lastInsertRowid));
   if (!created) throw new Error("No se pudo crear la conversación");
   return created;
+}
+
+export function findConversationByRealPhone(
+  tenantId: number,
+  realPhone: string,
+): Conversation | null {
+  return stmtFindConvoByRealPhone.get(tenantId, realPhone) ?? null;
+}
+
+const stmtFindConvoByPhoneSuffix = db.prepare<
+  [number, string, string],
+  Conversation
+>(
+  `SELECT c.* FROM conversations c
+   WHERE c.tenant_id = ? AND (c.real_phone LIKE '%' || ? OR c.phone LIKE '%' || ?)
+   ORDER BY (
+     SELECT COUNT(*) FROM messages m
+     WHERE m.conversation_id = c.id AND m.role = 'user'
+   ) DESC, c.id DESC
+   LIMIT 1`,
+);
+
+export function findConversationByPhoneSuffix(
+  tenantId: number,
+  phoneSuffix: string,
+): Conversation | null {
+  return (
+    stmtFindConvoByPhoneSuffix.get(tenantId, phoneSuffix, phoneSuffix) ?? null
+  );
 }
 
 export function getConversationById(
@@ -852,7 +1049,11 @@ const stmtGetConvState = db.prepare<
     state: string;
     draft_items: string | null;
     draft_delivery_method: string | null;
+    draft_delivery_zone: string | null;
+    draft_delivery_price: number | null;
     draft_address: string | null;
+    draft_lat: number | null;
+    draft_lng: number | null;
     draft_payment: string | null;
     updated_at: number;
   }
@@ -870,7 +1071,11 @@ export function getConversationState(
       state: row.state as ConversationStateName,
       draft_items: row.draft_items ? JSON.parse(row.draft_items) : [],
       draft_delivery_method: row.draft_delivery_method ?? null,
+      draft_delivery_zone: row.draft_delivery_zone ?? null,
+      draft_delivery_price: row.draft_delivery_price ?? null,
       draft_address: row.draft_address,
+      draft_lat: row.draft_lat ?? null,
+      draft_lng: row.draft_lng ?? null,
       draft_payment: row.draft_payment,
       updated_at: row.updated_at,
     };
@@ -882,7 +1087,11 @@ export function getConversationState(
     state: "SELECTING_PRODUCTS",
     draft_items: [],
     draft_delivery_method: null,
+    draft_delivery_zone: null,
+    draft_delivery_price: null,
     draft_address: null,
+    draft_lat: null,
+    draft_lng: null,
     draft_payment: null,
     updated_at: Math.floor(Date.now() / 1000),
   };
@@ -898,16 +1107,24 @@ const stmtUpsertConvState = db.prepare<
     string | null,
     string | null,
     string | null,
+    number | null,
+    string | null,
+    number | null,
+    number | null,
     string | null,
   ]
 >(
-  `INSERT INTO conversation_state (conversation_id, tenant_id, state, draft_items, draft_delivery_method, draft_address, draft_payment, updated_at)
-   VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+  `INSERT INTO conversation_state (conversation_id, tenant_id, state, draft_items, draft_delivery_method, draft_delivery_zone, draft_delivery_price, draft_address, draft_lat, draft_lng, draft_payment, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
    ON CONFLICT(conversation_id) DO UPDATE SET
      state = excluded.state,
      draft_items = excluded.draft_items,
      draft_delivery_method = excluded.draft_delivery_method,
+     draft_delivery_zone = excluded.draft_delivery_zone,
+     draft_delivery_price = excluded.draft_delivery_price,
      draft_address = excluded.draft_address,
+     draft_lat = excluded.draft_lat,
+     draft_lng = excluded.draft_lng,
      draft_payment = excluded.draft_payment,
      updated_at = unixepoch()`,
 );
@@ -919,7 +1136,11 @@ export function upsertConversationState(state: ConversationState): void {
     state.state,
     state.draft_items.length > 0 ? JSON.stringify(state.draft_items) : null,
     state.draft_delivery_method,
+    state.draft_delivery_zone,
+    state.draft_delivery_price,
     state.draft_address,
+    state.draft_lat,
+    state.draft_lng,
     state.draft_payment,
   );
 }
@@ -1044,8 +1265,11 @@ export function markOutboxSent(id: number): void {
 const stmtDeleteMessages = db.prepare<[number, number]>(
   "DELETE FROM messages WHERE conversation_id = ? AND conversation_id IN (SELECT id FROM conversations WHERE tenant_id = ?)",
 );
-const stmtDeletePendingOutbox = db.prepare<[number, number]>(
-  "DELETE FROM outbox WHERE conversation_id = ? AND sent = 0 AND tenant_id = ?",
+const stmtDeleteConversationState = db.prepare<[number]>(
+  "DELETE FROM conversation_state WHERE conversation_id = ?",
+);
+const stmtDeleteOutbox = db.prepare<[number]>(
+  "DELETE FROM outbox WHERE conversation_id = ?",
 );
 const stmtDeleteConvo = db.prepare<[number, number]>(
   "DELETE FROM conversations WHERE id = ? AND tenant_id = ?",
@@ -1054,7 +1278,8 @@ const stmtDeleteConvo = db.prepare<[number, number]>(
 const txDeleteConversation = db.transaction(
   (tenantId: number, conversationId: number) => {
     stmtDeleteMessages.run(conversationId, tenantId);
-    stmtDeletePendingOutbox.run(conversationId, tenantId);
+    stmtDeleteConversationState.run(conversationId);
+    stmtDeleteOutbox.run(conversationId);
     stmtDeleteConvo.run(conversationId, tenantId);
   },
 );
@@ -1203,34 +1428,107 @@ const stmtSearchProducts = db.prepare<
   `SELECT * FROM products WHERE tenant_id = ? AND active = 1 AND (LOWER(name) LIKE ? OR LOWER(description) LIKE ?) ORDER BY name ASC LIMIT ?`,
 );
 
+const stmtAllActiveProducts = db.prepare<[number], Product>(
+  `SELECT * FROM products WHERE tenant_id = ? AND active = 1`,
+);
+
+const SEARCH_STOPWORDS = new Set([
+  "de",
+  "la",
+  "el",
+  "los",
+  "las",
+  "con",
+  "sin",
+  "un",
+  "una",
+  "por",
+  "para",
+  "del",
+  "al",
+  "lo",
+  "le",
+  "se",
+  "su",
+  "sus",
+  "y",
+  "o",
+  "u",
+  "ni",
+  "que",
+  "en",
+  "es",
+  "mi",
+  "me",
+  "te",
+]);
+
+function normalizeForSearch(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
 export function searchProducts(
   tenantId: number,
   query: string,
   limit = 10,
 ): Product[] {
-  const words = query
+  const rawWords = query
     .toLowerCase()
     .trim()
     .split(/\s+/)
-    .filter((w) => w.length >= 2)
-    .map((w) => (w.endsWith("s") && w.length > 3 ? w.slice(0, -1) : w));
-  if (words.length === 0) {
-    const pattern = `%${query.toLowerCase()}%`;
-    return stmtSearchProducts.all(tenantId, pattern, pattern, limit);
+    .filter((w) => w.length >= 3 && !SEARCH_STOPWORDS.has(w))
+    .map((w) => (w.endsWith("s") && w.length > 4 ? w.slice(0, -1) : w));
+
+  if (rawWords.length === 0) {
+    const fallbackWords = query
+      .toLowerCase()
+      .trim()
+      .split(/\s+/)
+      .filter((w) => w.length >= 2);
+    if (fallbackWords.length === 0) return [];
+    const fbWord = normalizeForSearch(fallbackWords[0]);
+    return (stmtAllActiveProducts.all(tenantId) as Product[]).filter((p) =>
+      normalizeForSearch(p.name).includes(fbWord),
+    );
   }
-  // Build WHERE clause: each word must match name OR description (LIKE)
-  const conditions: string[] = [];
-  const params: (string | number)[] = [tenantId];
-  for (const word of words) {
-    conditions.push("(LOWER(name) LIKE ? OR LOWER(description) LIKE ?)");
-    params.push(`%${word}%`, `%${word}%`);
-  }
-  params.push(limit);
-  const sql = `SELECT * FROM products WHERE tenant_id = ? AND active = 1 AND ${conditions.join(" AND ")} ORDER BY name ASC LIMIT ?`;
-  return db.prepare(sql).all(...params) as Product[];
+
+  const words = rawWords.map(normalizeForSearch);
+  const allProducts = stmtAllActiveProducts.all(tenantId) as Product[];
+
+  // Umbral mínimo: cada palabra debe coincidir en el nombre (score += 2 por palabra en nombre).
+  // Si hay 2 palabras, el score mínimo es 4. Esto evita que "torta de almojabana"
+  // devuelva "Torta 3 leches" (que solo coincide con "torta", score=2).
+  const minScore = words.length * 2;
+
+  const scored = allProducts
+    .map((p) => {
+      const normName = normalizeForSearch(p.name);
+      const normDesc = normalizeForSearch(p.description ?? "");
+      let score = 0;
+      for (const word of words) {
+        if (normName.includes(word)) score += 2;
+        if (normDesc.includes(word)) score += 1;
+      }
+      return { product: p, score };
+    })
+    .filter((s) => s.score >= minScore)
+    .sort(
+      (a, b) =>
+        b.score - a.score || a.product.name.localeCompare(b.product.name),
+    )
+    .slice(0, limit)
+    .map((s) => s.product);
+
+  return scored;
 }
 
-const stmtGetProductByName = db.prepare<[number, string], Product>(
+const stmtGetProductByNameExact = db.prepare<[number, string], Product>(
+  `SELECT * FROM products WHERE tenant_id = ? AND active = 1 AND LOWER(name) = ? LIMIT 1`,
+);
+const stmtGetProductByNameLike = db.prepare<[number, string], Product>(
   `SELECT * FROM products WHERE tenant_id = ? AND active = 1 AND LOWER(name) LIKE ? ORDER BY name ASC LIMIT 1`,
 );
 
@@ -1238,6 +1536,17 @@ export function getProductByName(
   tenantId: number,
   name: string,
 ): Product | null {
+  // 1. Match exacto (case-insensitive) — prioritario para no descontar
+  //    stock del producto equivocado.
+  const exact = stmtGetProductByNameExact.get(tenantId, name.toLowerCase());
+  if (exact) return exact;
+  // 2. LIKE como fallback (ej: "nutella" → "Galleta de Nutella")
+  const like = stmtGetProductByNameLike.get(
+    tenantId,
+    `%${name.toLowerCase()}%`,
+  );
+  if (like) return like;
+  // 3. Búsqueda full-text como último recurso
   const results = searchProducts(tenantId, name, 1);
   return results[0] ?? null;
 }
@@ -1253,9 +1562,9 @@ export function getProductStock(
   tenantId: number,
   name: string,
 ): { id: number; name: string; stock: number } | null {
-  const results = searchProducts(tenantId, name, 1);
-  if (results.length === 0) return null;
-  return { id: results[0].id, name: results[0].name, stock: results[0].stock };
+  const product = getProductByName(tenantId, name);
+  if (!product) return null;
+  return { id: product.id, name: product.name, stock: product.stock };
 }
 
 const stmtDecrementStock = db.prepare<[number, number, number]>(
@@ -1451,6 +1760,16 @@ export interface TenantConfig {
   business_hours: string | null;
   out_of_hours_message: string | null;
   extra_links: string | null;
+  feedback_message: string | null;
+  admin_phone: string | null;
+  delivery_price: number | null;
+  business_location_url: string | null;
+  price_per_km: number | null;
+  max_delivery_km: number | null;
+  min_order_amount: number | null;
+  min_delivery_price: number | null;
+  bot_paused: boolean;
+  paused_message: string | null;
 }
 
 export interface TenantLink {
@@ -1479,10 +1798,20 @@ const stmtUpdateTenantConfig = db.prepare<
     string | null,
     string | null,
     string | null,
+    string | null,
+    string | null,
+    number | null,
+    string | null,
+    number | null,
+    number | null,
+    number | null,
+    number | null,
+    number,
+    string | null,
     number,
   ]
 >(
-  `UPDATE tenants SET business_name = ?, business_type = ?, payment_info = ?, custom_greeting = ?, custom_prompt = ?, catalog_url = ?, catalog_message = ?, assistant_name = ?, business_address = ?, business_hours = ?, out_of_hours_message = ?, extra_links = ? WHERE id = ?`,
+  `UPDATE tenants SET business_name = ?, business_type = ?, payment_info = ?, custom_greeting = ?, custom_prompt = ?, catalog_url = ?, catalog_message = ?, assistant_name = ?, business_address = ?, business_hours = ?, out_of_hours_message = ?, extra_links = ?, feedback_message = ?, admin_phone = ?, delivery_price = ?, business_location_url = ?, price_per_km = ?, max_delivery_km = ?, min_order_amount = ?, min_delivery_price = ?, bot_paused = ?, paused_message = ? WHERE id = ?`,
 );
 
 export function updateTenantConfig(
@@ -1502,6 +1831,16 @@ export function updateTenantConfig(
     config.business_hours || null,
     config.out_of_hours_message || null,
     config.extra_links || null,
+    config.feedback_message || null,
+    config.admin_phone || null,
+    config.delivery_price ?? null,
+    config.business_location_url || null,
+    config.price_per_km ?? null,
+    config.max_delivery_km ?? null,
+    config.min_order_amount ?? null,
+    config.min_delivery_price ?? null,
+    config.bot_paused ? 1 : 0,
+    config.paused_message || null,
     tenantId,
   );
 }
@@ -1625,6 +1964,35 @@ export function countDuplicateContentInWindow(
 export function purgeOldMessageEvents(olderThanSeconds = 7200): void {
   const cutoff = Math.floor(Date.now() / 1000) - olderThanSeconds;
   stmtPurgeOldMsgEvents.run(cutoff);
+}
+
+// ---------------------------------------------------------------------------
+// Dedup persistente de mensajes entrantes de WhatsApp
+// ---------------------------------------------------------------------------
+
+const stmtIsMsgProcessed = db.prepare<[string], { msg_id: string }>(
+  "SELECT msg_id FROM processed_messages WHERE msg_id = ?",
+);
+
+const stmtMarkMsgProcessed = db.prepare<[string]>(
+  "INSERT OR IGNORE INTO processed_messages (msg_id) VALUES (?)",
+);
+
+const stmtPurgeOldProcessed = db.prepare<[number]>(
+  "DELETE FROM processed_messages WHERE created_at < ?",
+);
+
+export function isMessageProcessed(msgId: string): boolean {
+  return !!stmtIsMsgProcessed.get(msgId);
+}
+
+export function markMessageProcessed(msgId: string): void {
+  stmtMarkMsgProcessed.run(msgId);
+}
+
+export function purgeOldProcessedMessages(olderThanSeconds = 86400): void {
+  const cutoff = Math.floor(Date.now() / 1000) - olderThanSeconds;
+  stmtPurgeOldProcessed.run(cutoff);
 }
 
 // ---------------------------------------------------------------------------
@@ -1955,12 +2323,14 @@ export interface CreateOrderInput {
   customer_name?: string | null;
   items: CreateOrderItemInput[];
   notes?: string | null;
+  delivery_lat?: number | null;
+  delivery_lng?: number | null;
 }
 
 // Prepared statements para pedidos
 const stmtInsertOrder = db.prepare(`
-  INSERT INTO orders (tenant_id, customer_phone, customer_name, status, total_amount, notes, created_at, updated_at)
-  VALUES (?, ?, ?, 'PENDING', 0, ?, unixepoch(), unixepoch())
+  INSERT INTO orders (tenant_id, customer_phone, customer_name, status, total_amount, notes, delivery_lat, delivery_lng, created_at, updated_at)
+  VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?, unixepoch(), unixepoch())
 `);
 
 const stmtInsertOrderItem = db.prepare(`
@@ -2006,6 +2376,8 @@ export function createOrder(
       input.customer_phone,
       input.customer_name || null,
       input.notes || null,
+      input.delivery_lat ?? null,
+      input.delivery_lng ?? null,
     );
 
     const orderId = Number(orderResult.lastInsertRowid);
@@ -2034,6 +2406,12 @@ export function createOrder(
         unit_price: item.unit_price,
         total_price: totalPrice,
       });
+
+      // Descontar stock
+      const product = getProductByName(input.tenant_id, item.product_name);
+      if (product) {
+        decrementStock(input.tenant_id, product.id, item.quantity);
+      }
     }
 
     // Actualizar el total del pedido
@@ -2089,6 +2467,93 @@ export function getLastOrderByPhone(
 
   const items = stmtGetOrderItems.all(order.id) as OrderItem[];
   return { ...order, items };
+}
+
+// === Delivery Zones CRUD ===
+
+const stmtGetDeliveryZones = db.prepare<[number], DeliveryZone>(
+  `SELECT * FROM delivery_zones WHERE tenant_id = ? ORDER BY zone_name`,
+);
+
+export function getDeliveryZones(tenantId: number): DeliveryZone[] {
+  return stmtGetDeliveryZones.all(tenantId);
+}
+
+export function addDeliveryZone(
+  tenantId: number,
+  zoneName: string,
+  price: number,
+): DeliveryZone {
+  const result = db
+    .prepare<
+      [number, string, number]
+    >(`INSERT INTO delivery_zones (tenant_id, zone_name, price) VALUES (?, ?, ?)`)
+    .run(tenantId, zoneName, price);
+  return {
+    id: result.lastInsertRowid as number,
+    tenant_id: tenantId,
+    zone_name: zoneName,
+    price,
+  };
+}
+
+export function updateDeliveryZone(
+  id: number,
+  tenantId: number,
+  zoneName: string,
+  price: number,
+): boolean {
+  const result = db
+    .prepare<
+      [string, number, number, number]
+    >(`UPDATE delivery_zones SET zone_name = ?, price = ? WHERE id = ? AND tenant_id = ?`)
+    .run(zoneName, price, id, tenantId);
+  return result.changes > 0;
+}
+
+export function deleteDeliveryZone(id: number, tenantId: number): boolean {
+  const result = db
+    .prepare<
+      [number, number]
+    >(`DELETE FROM delivery_zones WHERE id = ? AND tenant_id = ?`)
+    .run(id, tenantId);
+  return result.changes > 0;
+}
+
+export function findDeliveryZone(
+  tenantId: number,
+  text: string,
+): DeliveryZone | null {
+  const zones = getDeliveryZones(tenantId);
+  const t = text.toLowerCase().trim();
+  for (const zone of zones) {
+    const zn = zone.zone_name.toLowerCase();
+    if (t.includes(zn)) {
+      return zone;
+    }
+  }
+  for (const zone of zones) {
+    const zn = zone.zone_name.toLowerCase();
+    if (zn.startsWith(t) || t.startsWith(zn) || levenshteinClose(t, zn, 3)) {
+      return zone;
+    }
+  }
+  return null;
+}
+
+function levenshteinClose(a: string, b: string, maxDist: number): boolean {
+  if (Math.abs(a.length - b.length) > maxDist) return false;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const curr = [i];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr.push(Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost));
+    }
+    if (Math.min(...curr) > maxDist) return false;
+    prev = curr;
+  }
+  return prev[b.length] <= maxDist;
 }
 
 // Actualizar estado de un pedido
@@ -2383,4 +2848,381 @@ export function getOrdersByStatus(
   return stmtGetOrdersByStatus.all(tenantId, status, limit) as (Order & {
     item_count: number;
   })[];
+}
+
+// ---------------------------------------------------------------------------
+// Super-Admin Overview — métricas globales de todos los tenants
+// ---------------------------------------------------------------------------
+
+export interface TenantOverviewRow {
+  id: number;
+  name: string;
+  slug: string;
+  plan_name: string | null;
+  plan_slug: string | null;
+  daily_chat_limit: number;
+  chats_today: number;
+  messages_today: number;
+  tokens_today: number;
+  cost_today_usd: number;
+  cost_month_usd: number;
+  llm_calls_today: number;
+  orders_today: number;
+  active_products: number;
+  total_conversations: number;
+  status: "active" | "warning" | "critical";
+}
+
+const stmtTenantsOverview = db.prepare<
+  [],
+  {
+    id: number;
+    name: string;
+    slug: string;
+    plan_name: string | null;
+    plan_slug: string | null;
+    daily_chat_limit: number;
+    chats_today: number;
+    messages_today: number;
+    tokens_today: number;
+    cost_today_usd: number;
+    cost_month_usd: number;
+    llm_calls_today: number;
+    orders_today: number;
+    active_products: number;
+    total_conversations: number;
+    trial_end_date: number | null;
+  }
+>(
+  `SELECT
+     t.id, t.name, t.slug,
+     p.name as plan_name, p.slug as plan_slug,
+     COALESCE(p.daily_chat_limit, 0) as daily_chat_limit,
+     tp.trial_end_date,
+     COALESCE(du.conversation_count, 0) as chats_today,
+     COALESCE(du.message_count, 0) as messages_today,
+     COALESCE(llm_today.total_tokens, 0) as tokens_today,
+     COALESCE(llm_today.total_cost, 0) as cost_today_usd,
+     COALESCE(llm_today.call_count, 0) as llm_calls_today,
+     COALESCE(llm_month.total_cost, 0) as cost_month_usd,
+     COALESCE(ord_today.cnt, 0) as orders_today,
+     COALESCE(prod_active.cnt, 0) as active_products,
+     COALESCE(conv_total.cnt, 0) as total_conversations
+   FROM tenants t
+   LEFT JOIN tenant_plans tp ON tp.tenant_id = t.id
+   LEFT JOIN plans p ON p.id = tp.plan_id
+   LEFT JOIN (
+     SELECT tenant_id,
+            SUM(conversation_count) as conversation_count,
+            SUM(message_count) as message_count
+     FROM tenant_daily_usage
+     WHERE date = date('now')
+     GROUP BY tenant_id
+   ) du ON du.tenant_id = t.id
+   LEFT JOIN (
+     SELECT tenant_id,
+            SUM(total_tokens) as total_tokens,
+            SUM(cost_usd) as total_cost,
+            COUNT(*) as call_count
+     FROM llm_usage
+     WHERE created_at >= unixepoch('now', 'start of day')
+     GROUP BY tenant_id
+   ) llm_today ON llm_today.tenant_id = t.id
+   LEFT JOIN (
+     SELECT tenant_id, SUM(cost_usd) as total_cost
+     FROM llm_usage
+     WHERE created_at >= unixepoch('now', 'start of month')
+     GROUP BY tenant_id
+   ) llm_month ON llm_month.tenant_id = t.id
+   LEFT JOIN (
+     SELECT tenant_id, COUNT(*) as cnt
+     FROM orders
+     WHERE created_at >= unixepoch('now', 'start of day') AND deleted_at IS NULL
+     GROUP BY tenant_id
+   ) ord_today ON ord_today.tenant_id = t.id
+   LEFT JOIN (
+     SELECT tenant_id, COUNT(*) as cnt
+     FROM products
+     WHERE active = 1
+     GROUP BY tenant_id
+   ) prod_active ON prod_active.tenant_id = t.id
+   LEFT JOIN (
+     SELECT tenant_id, COUNT(*) as cnt
+     FROM conversations
+     GROUP BY tenant_id
+   ) conv_total ON conv_total.tenant_id = t.id
+   ORDER BY t.id`,
+);
+
+export function getTenantsAdminOverview(): TenantOverviewRow[] {
+  const rows = stmtTenantsOverview.all();
+  const dailyBudget = parseFloat(process.env.LLM_DAILY_BUDGET_USD || "1.0");
+  const monthlyBudget = parseFloat(
+    process.env.LLM_MONTHLY_BUDGET_USD || "25.0",
+  );
+
+  return rows.map((r) => {
+    let status: "active" | "warning" | "critical" = "active";
+
+    // Trial expirado
+    if (r.trial_end_date && Date.now() / 1000 > r.trial_end_date) {
+      status = "critical";
+    }
+    // Presupuesto LLM excedido
+    else if (
+      r.cost_today_usd >= dailyBudget ||
+      r.cost_month_usd >= monthlyBudget
+    ) {
+      status = "critical";
+    }
+    // Cerca del límite de chats (80%+)
+    else if (
+      r.daily_chat_limit > 0 &&
+      r.chats_today >= r.daily_chat_limit * 0.8
+    ) {
+      status = "warning";
+    }
+    // Cerca del presupuesto diario (80%+)
+    else if (r.cost_today_usd >= dailyBudget * 0.8) {
+      status = "warning";
+    }
+
+    return { ...r, status };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Lugares conocidos (known_places)
+// ---------------------------------------------------------------------------
+
+export type KnownPlaceSource = "confirmed" | "bulk_import";
+
+export interface KnownPlace {
+  id: number;
+  tenant_id: number;
+  name: string;
+  aliases: string | null;
+  lat: number;
+  lng: number;
+  times_used: number;
+  created_at: number;
+  source: KnownPlaceSource;
+}
+
+function normalizeText(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const stmtFindKnownPlace = db.prepare<[number, string], KnownPlace>(
+  `SELECT * FROM known_places WHERE tenant_id = ? AND LOWER(name) = ?`,
+);
+
+// Trae todos los lugares del tenant para comparar en JS (nombre y alias
+// en ambas direcciones). Un LIKE a nivel SQL solo contra `name` se pierde
+// los casos donde la consulta del cliente trae MÁS palabras que el
+// nombre guardado (ej: guardado "Guaduales del Otún", cliente escribe
+// "guaduales del otun dosquebradas") — ahí `name LIKE '%query%'` nunca
+// matchea porque `name` es más corto que `query`.
+const stmtListKnownPlaces = db.prepare<[number], KnownPlace>(
+  `SELECT * FROM known_places WHERE tenant_id = ? ORDER BY times_used DESC`,
+);
+
+const stmtUpsertKnownPlace = db.prepare(
+  `INSERT INTO known_places (tenant_id, name, aliases, lat, lng, times_used, created_at, source)
+   VALUES (?, ?, ?, ?, ?, 1, unixepoch(), ?)
+   ON CONFLICT(tenant_id, name) DO UPDATE SET
+     lat = excluded.lat,
+     lng = excluded.lng,
+     times_used = times_used + 1,
+     source = CASE WHEN excluded.source = 'confirmed' THEN 'confirmed' ELSE known_places.source END,
+     aliases = CASE WHEN excluded.aliases IS NOT NULL THEN excluded.aliases ELSE known_places.aliases END`,
+);
+
+const stmtIncrementKnownPlaceUsage = db.prepare(
+  `UPDATE known_places SET times_used = times_used + 1 WHERE id = ?`,
+);
+
+// Igual que findKnownPlace, pero devuelve TODOS los lugares que matchean
+// en vez de quedarse con el primero. La usa el resolver de direcciones
+// para poder detectar ambigüedad real (ej: "arboleda" matchea tanto
+// "CONJUNTO RESIDENCIAL LA ARBOLEDA" como "CONDOMINIO ARBOLEDA DEL RIO",
+// en coordenadas completamente distintas) en vez de adivinar cuál quiso
+// decir el cliente y mandar el domicilio al lugar equivocado.
+export function findKnownPlaces(tenantId: number, query: string): KnownPlace[] {
+  const normalized = normalizeText(query);
+  // Coincidencia exacta de nombre: inequívoca por definición (el nombre
+  // es único por tenant), no hace falta revisar más candidatos.
+  const exact = stmtFindKnownPlace.get(tenantId, normalized);
+  if (exact) return [exact];
+
+  const all = stmtListKnownPlaces.all(tenantId);
+  const matches: KnownPlace[] = [];
+  for (const r of all) {
+    let matched = false;
+    if (r.aliases) {
+      try {
+        const aliases: string[] = JSON.parse(r.aliases);
+        if (
+          aliases.some((a) => {
+            const aNorm = normalizeText(a);
+            return (
+              aNorm === normalized ||
+              aNorm.includes(normalized) ||
+              (normalized.length > 3 && normalized.includes(aNorm))
+            );
+          })
+        ) {
+          matched = true;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    if (!matched) {
+      const nameNorm = normalizeText(r.name);
+      if (
+        nameNorm.includes(normalized) ||
+        (normalized.length > 3 && normalized.includes(nameNorm))
+      ) {
+        matched = true;
+      }
+    }
+    if (matched) matches.push(r);
+  }
+  return matches;
+}
+
+export function findKnownPlace(
+  tenantId: number,
+  query: string,
+): KnownPlace | null {
+  const normalized = normalizeText(query);
+  // Exact match
+  const exact = stmtFindKnownPlace.get(tenantId, normalized);
+  if (exact) return exact;
+
+  // Comparar contra todos los lugares del tenant (nombre y alias, en
+  // ambas direcciones de contención) — ver nota en stmtListKnownPlaces.
+  const all = stmtListKnownPlaces.all(tenantId);
+  for (const r of all) {
+    if (r.aliases) {
+      try {
+        const aliases: string[] = JSON.parse(r.aliases);
+        if (
+          aliases.some((a) => {
+            const aNorm = normalizeText(a);
+            return (
+              aNorm === normalized ||
+              aNorm.includes(normalized) ||
+              (normalized.length > 3 && normalized.includes(aNorm))
+            );
+          })
+        ) {
+          return r;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    // If name contains the query or query contains the name
+    const nameNorm = normalizeText(r.name);
+    if (
+      nameNorm.includes(normalized) ||
+      (normalized.length > 3 && normalized.includes(nameNorm))
+    ) {
+      return r;
+    }
+  }
+  return null;
+}
+
+export function upsertKnownPlace(
+  tenantId: number,
+  name: string,
+  lat: number,
+  lng: number,
+  aliases?: string[],
+  source: KnownPlaceSource = "confirmed",
+): void {
+  const aliasesJson = aliases ? JSON.stringify(aliases) : null;
+  stmtUpsertKnownPlace.run(tenantId, name, aliasesJson, lat, lng, source);
+}
+
+export function incrementKnownPlaceUsage(id: number): void {
+  stmtIncrementKnownPlaceUsage.run(id);
+}
+
+// ---------------------------------------------------------------------------
+// Direcciones frecuentes por cliente (customer_addresses)
+// ---------------------------------------------------------------------------
+
+export interface CustomerAddress {
+  id: number;
+  tenant_id: number;
+  phone: string;
+  address: string;
+  reference: string;
+  lat: number;
+  lng: number;
+  last_used_at: number;
+}
+
+const stmtGetCustomerAddress = db.prepare<[number, string], CustomerAddress>(
+  `SELECT * FROM customer_addresses WHERE tenant_id = ? AND phone = ?`,
+);
+
+const stmtUpsertCustomerAddress = db.prepare(
+  `INSERT INTO customer_addresses (tenant_id, phone, address, reference, lat, lng, last_used_at)
+   VALUES (?, ?, ?, ?, ?, ?, unixepoch())
+   ON CONFLICT(tenant_id, phone) DO UPDATE SET address = excluded.address, reference = excluded.reference, lat = excluded.lat, lng = excluded.lng, last_used_at = unixepoch()`,
+);
+
+export function getCustomerAddress(
+  tenantId: number,
+  phone: string,
+): CustomerAddress | null {
+  return stmtGetCustomerAddress.get(tenantId, phone) || null;
+}
+
+export function upsertCustomerAddress(
+  tenantId: number,
+  phone: string,
+  address: string,
+  reference: string,
+  lat: number,
+  lng: number,
+): void {
+  stmtUpsertCustomerAddress.run(tenantId, phone, address, reference, lat, lng);
+}
+
+// LLM usage por día para un tenant (últimos N días)
+export interface LLMDailyUsage {
+  date: string;
+  tokens: number;
+  cost_usd: number;
+  calls: number;
+  avg_duration_ms: number;
+}
+
+export function getLLMDailyUsage(tenantId: number, days = 7): LLMDailyUsage[] {
+  const since = Math.floor((Date.now() - days * 86400000) / 1000);
+  return db
+    .prepare<[number, number], LLMDailyUsage>(
+      `SELECT
+         DATE(created_at, 'unixepoch') as date,
+         SUM(total_tokens) as tokens,
+         SUM(cost_usd) as cost_usd,
+         COUNT(*) as calls,
+         AVG(duration_ms) as avg_duration_ms
+       FROM llm_usage
+       WHERE tenant_id = ? AND created_at >= ? AND success = 1
+       GROUP BY DATE(created_at, 'unixepoch')
+       ORDER BY date DESC`,
+    )
+    .all(tenantId, since) as LLMDailyUsage[];
 }
