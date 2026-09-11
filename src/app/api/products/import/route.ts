@@ -2,8 +2,20 @@ import { NextRequest, NextResponse } from "next/server";
 import { parseExcelFile, parseAllSheets, flattenMultiSheetResults, ParsedProduct } from "@/lib/excel-parser";
 import { createProduct, listProducts, updateProduct } from "@/lib/db";
 import { requireTenantId } from "@/lib/tenant";
+import { assertSafeExternalUrl } from "@/lib/url-safety";
 
 export const dynamic = "force-dynamic";
+
+const MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
+
+// BUG DE SEGURIDAD real encontrado (2026-09-11): este GET no pedía
+// autenticación y hacía fetch() a CUALQUIER url que le pasaran por query
+// string — un SSRF clásico. Cualquiera (sin login) podía usar este
+// endpoint para que el servidor hiciera peticiones a su red interna
+// (ej: metadata del proveedor cloud, redis, otros servicios internos) o
+// como proxy abierto. Ahora exige sesión y bloquea IPs privadas/internas
+// (ver src/lib/url-safety.ts, compartido con la generación de link
+// preview del bot que se agregó por el mismo motivo).
 
 interface ImportOptions {
   mode: "merge" | "replace";
@@ -49,6 +61,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: "Falta el archivo (campo 'file')" },
         { status: 400 }
+      );
+    }
+    if (file.size > MAX_IMPORT_FILE_BYTES) {
+      return NextResponse.json(
+        { error: "El archivo supera el tamaño máximo permitido (10MB)" },
+        { status: 413 },
       );
     }
 
@@ -186,6 +204,7 @@ export async function POST(request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   try {
+    await requireTenantId();
     const { searchParams } = new URL(request.url);
     const fileUrl = searchParams.get("url");
 
@@ -196,15 +215,39 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const response = await fetch(fileUrl);
+    try {
+      await assertSafeExternalUrl(fileUrl);
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "URL no permitida" },
+        { status: 400 },
+      );
+    }
+
+    const response = await fetch(fileUrl, {
+      signal: AbortSignal.timeout(10000),
+    });
     if (!response.ok) {
       return NextResponse.json(
         { error: "No se pudo descargar el archivo" },
         { status: 400 }
       );
     }
+    const contentLength = Number(response.headers.get("content-length") ?? 0);
+    if (contentLength > MAX_IMPORT_FILE_BYTES) {
+      return NextResponse.json(
+        { error: "El archivo supera el tamaño máximo permitido (10MB)" },
+        { status: 413 },
+      );
+    }
 
     const arrayBuffer = await response.arrayBuffer();
+    if (arrayBuffer.byteLength > MAX_IMPORT_FILE_BYTES) {
+      return NextResponse.json(
+        { error: "El archivo supera el tamaño máximo permitido (10MB)" },
+        { status: 413 },
+      );
+    }
     const results = parseAllSheets(arrayBuffer);
 
     const preview = results.map((r) => ({
@@ -227,6 +270,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ success: true, preview });
   } catch (error) {
+    if (error instanceof Response) return error;
     console.error("Error previewing file:", error);
     return NextResponse.json(
       {

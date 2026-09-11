@@ -196,6 +196,20 @@ function analyzeColumnType(header: string, values: any[]): ColumnType {
     "valor_unitario",
   ];
 
+  // BUG real encontrado (2026-09-11, con test automatizado): una columna
+  // que se llama EXACTAMENTE "Precio" (el caso más común y simple —
+  // Nombre/Precio/Stock) caía en el mismo bucle de abajo que "Precio
+  // Talla S" y se clasificaba como "variant" con etiqueta "Precio" —
+  // cada producto terminaba con una variante rara llamada "Precio" en
+  // vez de un precio base simple. `type: "price"` existía en el tipo
+  // ColumnType y hasta se usaba más abajo (`priceColIdx`), pero nunca se
+  // asignaba de verdad. Ahora, si el header ES el indicador (sin nada
+  // más alrededor), es precio simple; solo se vuelve "variant" cuando
+  // trae texto adicional (ej: "Precio Talla S").
+  if (priceIndicators.includes(norm)) {
+    return { type: "price", originalHeader: header, normalizedHeader: norm };
+  }
+
   for (const indicator of priceIndicators) {
     if (norm.includes(indicator)) {
       const variantLabel = norm
@@ -248,7 +262,21 @@ export function parsePriceValue(value: any): number | null {
 
   let result: string;
   if (hasComma && hasDot) {
-    result = cleaned.replace(/\./g, "").replace(",", ".");
+    // BUG real encontrado (2026-09-11, con test automatizado): esto
+    // asumía SIEMPRE formato europeo/colombiano (punto=miles,
+    // coma=decimal) aunque el archivo trajera formato US
+    // (coma=miles, punto=decimal, ej: "$1,500.00"). El separador que
+    // aparece MÁS A LA DERECHA es el decimal en ambas convenciones —
+    // eso es lo que hay que mirar, no asumir un formato fijo.
+    const lastComma = cleaned.lastIndexOf(",");
+    const lastDot = cleaned.lastIndexOf(".");
+    if (lastComma > lastDot) {
+      // "1.500,50" (CO/EU): el punto es separador de miles, la coma es decimal
+      result = cleaned.replace(/\./g, "").replace(",", ".");
+    } else {
+      // "1,500.50" (US): la coma es separador de miles, el punto es decimal
+      result = cleaned.replace(/,/g, "");
+    }
   } else if (hasComma && !hasDot) {
     const parts = cleaned.split(",");
     if (parts.length === 2 && parts[1].length === 3) {
@@ -263,7 +291,13 @@ export function parsePriceValue(value: any): number | null {
       dotParts[1].length === 3 &&
       dotParts[0].length <= 3
     ) {
-      result = cleaned.replace(/./g, "");
+      // BUG real encontrado (2026-09-11, con test automatizado): acá
+      // decía `/./g` (regex "cualquier carácter") en vez de `/\./g`
+      // ("el punto literal") — borraba TODO el número, no solo el
+      // punto. Este es el formato más común en Colombia ("$15.000",
+      // "$8.000"), así que este bug hacía que la mayoría de precios
+      // colombianos con punto de miles se importaran como null/0.
+      result = cleaned.replace(/\./g, "");
     } else if (dotParts.length > 2) {
       result = cleaned.replace(/\./g, "");
     } else {
@@ -357,6 +391,7 @@ export function parseExcelFile(
   const nameColIdx = columns.findIndex((c) => c.type === "name");
   const descColIdx = columns.findIndex((c) => c.type === "description");
   const stockColIdx = columns.findIndex((c) => c.type === "stock");
+  const simplePriceColIdx = columns.findIndex((c) => c.type === "price");
   const variantKeyColIdx = columns.findIndex((c) => c.type === "variantKey");
   const variantCols = columns
     .map((c, i) => ({ col: c, idx: i }))
@@ -490,7 +525,9 @@ export function parseExcelFile(
         });
 
         let basePrice = 0;
-        if (variants.length > 0) {
+        if (simplePriceColIdx !== -1) {
+          basePrice = parsePriceValue(row[rawHeaders[simplePriceColIdx]]) ?? 0;
+        } else if (variants.length > 0) {
           basePrice = variants[0].price;
         } else {
           const priceCols = columns

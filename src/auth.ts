@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import { getUserByEmail } from "@/lib/db";
 import type { UserRole } from "@/lib/db";
 import { authConfig } from "@/auth.config";
+import { checkApiRateLimit } from "@/lib/api-rate-limit";
 
 declare module "next-auth" {
   interface User {
@@ -32,12 +33,24 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" },
       },
-      async authorize(credentials) {
+      async authorize(credentials, request) {
         const email = String(credentials?.email ?? "")
           .trim()
           .toLowerCase();
         const password = String(credentials?.password ?? "");
         if (!email || !password) return null;
+
+        // BUG DE SEGURIDAD real encontrado (2026-09-11): el login no tenía
+        // ningún límite de intentos — se podía probar contraseñas sin
+        // parar contra cualquier email (fuerza bruta / credential
+        // stuffing). Se limita por email (evita reventar UNA cuenta
+        // puntual) y por IP (evita probar muchos emails distintos desde el
+        // mismo origen).
+        const xff = request?.headers?.get("x-forwarded-for");
+        const ip = xff ? xff.split(",")[0].trim() : "unknown";
+        const byEmail = checkApiRateLimit(`login-email:${email}`, 5, 900000);
+        const byIp = checkApiRateLimit(`login-ip:${ip}`, 20, 900000);
+        if (!byEmail.ok || !byIp.ok) return null;
 
         const user = getUserByEmail(email);
         if (!user) return null;
