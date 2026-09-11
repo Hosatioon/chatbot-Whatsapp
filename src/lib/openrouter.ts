@@ -196,6 +196,24 @@ function sanitizeJsonReply(raw: string): string {
   return s;
 }
 
+// BUG real encontrado (2026-09-11): un cliente escribió todo junto —
+// "Tienes domi para boreal torre 2 apt 804" — y el turno cayó en el
+// fallback sin tools (respuesta no-JSON). El safety net de método de
+// entrega sí agarraba el "domi", pero la dirección que venía en el
+// MISMO mensaje se perdía por completo — el cliente tuvo que volver a
+// escribirla en un mensaje aparte. Esto saca lo que queda después de la
+// palabra de domicilio (tolerando erratas tipo "domiclio") para
+// intentar resolverlo como dirección también, en el mismo turno.
+function extractAddressAfterDeliveryWord(rawMsg: string): string | null {
+  let s = rawMsg.trim();
+  s = s.replace(/^.*?\bdomi\w*\s*/i, "");
+  s = s.replace(/^(?:para|a|hacia)\s+/i, "");
+  s = s.replace(/[?!.]+$/, "").trim();
+  if (!s) return null;
+  if (/^(?:por\s*favor|porfa|gracias|please)$/i.test(s)) return null;
+  return s.length > 4 ? s : null;
+}
+
 export async function generateReply(
   history: Message[],
   tenantId: number,
@@ -912,6 +930,42 @@ export async function generateReply(
             method === "recoger"
               ? "¿Transferencia o efectivo?"
               : "¿Me compartes tu ubicación por WhatsApp? (📎 → Ubicación). Si no puedes, también me sirve la dirección escrita";
+
+          // Mismo mensaje real que motivó el fix de arriba: el cliente
+          // puede haber dado el método Y la dirección juntos. Si hay algo
+          // después de la palabra de domicilio, intentamos resolverlo
+          // como dirección en el mismo turno en vez de preguntarla de nuevo.
+          if (method === "domicilio") {
+            const addressCandidate = extractAddressAfterDeliveryWord(
+              ctx.lastCustomerMessage ?? "",
+            );
+            if (addressCandidate) {
+              console.warn(
+                `[openrouter] Safety net: probando dirección incluida en el mismo mensaje → "${addressCandidate}"`,
+              );
+              const addrResult = await executeTool(
+                "setAddress",
+                { address: addressCandidate },
+                tenantId,
+                ctx,
+              );
+              try {
+                const addrParsed = JSON.parse(addrResult.result);
+                if (addrParsed.success && addrParsed.delivery_price != null) {
+                  parsed.reply = addrParsed.skip_confirmation
+                    ? "¿Transferencia o efectivo?"
+                    : `¿Es ${addrParsed.resolved_name}?`;
+                } else if (addrParsed.ambiguous && addrParsed.deterministic_reply) {
+                  parsed.reply = addrParsed.deterministic_reply;
+                }
+                // si no resolvió nada útil (not_found), dejamos el mensaje
+                // de arriba pidiendo ubicación — no perdimos nada, solo no
+                // ganamos el turno extra.
+              } catch {
+                // ignorar, dejar el mensaje de "manda tu ubicación"
+              }
+            }
+          }
         }
       } catch {
         // si falla, dejar la respuesta del LLM tal cual
