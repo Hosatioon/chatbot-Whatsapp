@@ -21,7 +21,7 @@ const PostBody = z.object({
 
 export async function GET(_req: NextRequest, { params }: Ctx) {
   try {
-    const { tenantId } = await requireTenantId();
+    const { tenantId, isSuperAdmin } = await requireTenantId();
     const rl = checkApiRateLimit(`tenant:${tenantId}`);
     if (!rl.ok) return apiRateLimitResponse(rl.retryAfter);
     const { conversationId } = await params;
@@ -29,14 +29,15 @@ export async function GET(_req: NextRequest, { params }: Ctx) {
     if (!Number.isInteger(id) || id <= 0) {
       return NextResponse.json({ error: "id inválido" }, { status: 400 });
     }
-    const convo = getConversationById(id, tenantId);
+    let convo = getConversationById(id, tenantId);
+    if (!convo && isSuperAdmin) convo = getConversationById(id);
     if (!convo) {
       return NextResponse.json(
         { error: "conversación no existe" },
         { status: 404 },
       );
     }
-    const messages = getMessages(tenantId, id, 200);
+    const messages = getMessages(convo.tenant_id, id, 200);
     return NextResponse.json({ conversation: convo, messages });
   } catch (e) {
     if (e instanceof Response) return e;
@@ -46,7 +47,7 @@ export async function GET(_req: NextRequest, { params }: Ctx) {
 
 export async function POST(req: NextRequest, { params }: Ctx) {
   try {
-    const { tenantId } = await requireTenantId();
+    const { tenantId, isSuperAdmin } = await requireTenantId();
     const rl = checkApiRateLimit(`tenant:${tenantId}`);
     if (!rl.ok) return apiRateLimitResponse(rl.retryAfter);
     const { conversationId } = await params;
@@ -54,7 +55,8 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     if (!Number.isInteger(id) || id <= 0) {
       return NextResponse.json({ error: "id inválido" }, { status: 400 });
     }
-    const convo = getConversationById(id, tenantId);
+    let convo = getConversationById(id, tenantId);
+    if (!convo && isSuperAdmin) convo = getConversationById(id);
     if (!convo) {
       return NextResponse.json(
         { error: "conversación no existe" },
@@ -69,7 +71,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     const content = parsed.data.content;
 
     const messageId = insertMessage(id, "human", content);
-    enqueueOutbox(tenantId, id, convo.phone, content, convo.jid);
+    enqueueOutbox(convo.tenant_id, id, convo.phone, content, convo.jid);
 
     return NextResponse.json({ ok: true, messageId });
   } catch (e) {

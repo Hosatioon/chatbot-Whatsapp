@@ -13,13 +13,14 @@ const ModeBody = z.object({ mode: z.enum(["AI", "HUMAN"]) });
 
 export async function POST(req: NextRequest, { params }: Ctx) {
   try {
-    const { tenantId } = await requireTenantId();
+    const { tenantId, isSuperAdmin } = await requireTenantId();
     const { conversationId } = await params;
     const id = Number(conversationId);
     if (!Number.isInteger(id) || id <= 0) {
       return NextResponse.json({ error: "id inválido" }, { status: 400 });
     }
-    const convo = getConversationById(id, tenantId);
+    let convo = getConversationById(id, tenantId);
+    if (!convo && isSuperAdmin) convo = getConversationById(id);
     if (!convo) {
       return NextResponse.json(
         { error: "conversación no existe" },
@@ -35,7 +36,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
       );
     }
 
-    setMode(tenantId, id, parsed.data.mode);
+    setMode(convo.tenant_id, id, parsed.data.mode);
     return NextResponse.json({ ok: true, mode: parsed.data.mode });
   } catch (e) {
     if (e instanceof Response) return e;

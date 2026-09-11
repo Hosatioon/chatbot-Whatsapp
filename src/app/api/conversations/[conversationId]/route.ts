@@ -10,20 +10,21 @@ interface Ctx {
 
 export async function DELETE(_req: NextRequest, { params }: Ctx) {
   try {
-    const { tenantId } = await requireTenantId();
+    const { tenantId, isSuperAdmin } = await requireTenantId();
     const { conversationId } = await params;
     const id = Number(conversationId);
     if (!Number.isInteger(id) || id <= 0) {
       return NextResponse.json({ error: "id inválido" }, { status: 400 });
     }
-    const convo = getConversationById(id, tenantId);
+    let convo = getConversationById(id, tenantId);
+    if (!convo && isSuperAdmin) convo = getConversationById(id);
     if (!convo) {
       return NextResponse.json(
         { error: "conversación no existe" },
         { status: 404 },
       );
     }
-    deleteConversation(tenantId, id);
+    deleteConversation(convo.tenant_id, id);
     return NextResponse.json({ ok: true });
   } catch (e) {
     if (e instanceof Response) return e;
