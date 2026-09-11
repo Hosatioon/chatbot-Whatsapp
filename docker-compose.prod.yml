@@ -1,20 +1,34 @@
 version: "3.8"
 
 # ============================================================
-# MONDRES - Arquitectura de Producción
+# MONDRES - Arquitectura de Producción (FUTURA, NO USAR TODAVÍA)
 # ============================================================
 #
-# ESTE docker-compose es para PRODUCCIÓN con PostgreSQL y Redis.
-# Para desarrollo local con SQLite, usa el proyecto directamente.
+# ⚠️  NO DESPLEGAR ESTE ARCHIVO TODAVÍA.
+#
+# El servicio `bot` de este compose usa `./bot-service`, que hoy corre
+# contra su propia SQLite local y NO está conectado a la base de datos
+# real (ni a Postgres pese a `DATABASE_URL`, ni al SQLite que usa el
+# dashboard). Si lo levantás así, el bot no ve los productos del
+# dashboard y los pedidos que arme no van a aparecer ahí.
+#
+# Para lanzar HOY, usá `docker-compose.yml` (SQLite compartido entre
+# el dashboard y el bot, con toda la lógica de stock/precio probada
+# en `src/lib/`). Este archivo queda como base para cuando se termine
+# de portar esa lógica a `bot-service/` y conectarlo a Postgres.
 #
 # Servicios:
 #   - app:        Next.js (dashboard + API)
-#   - bot:        Bot service (WhatsApp Baileys)
+#   - bot:        Bot service (WhatsApp Baileys) — INCOMPLETO, ver arriba
 #   - postgres:   PostgreSQL (base de datos)
 #   - redis:      Redis (caché + rate limiting + queue)
 #
-# Uso:
-#   docker-compose -f docker-compose.prod.yml up -d
+# Variables requeridas (definilas en tu shell o en un .env junto a
+# este archivo, docker-compose las levanta automáticamente):
+#   POSTGRES_PASSWORD=<contraseña fuerte>
+#
+# Uso (cuando esté listo):
+#   POSTGRES_PASSWORD=... docker-compose -f docker-compose.prod.yml up -d
 #
 # ============================================================
 
@@ -37,7 +51,7 @@ services:
       - .env.production
     environment:
       - NODE_ENV=production
-      - DATABASE_URL=postgresql://mondrex:CHANGE_ME@postgres:5432/mondrex
+      - DATABASE_URL=postgresql://mondrex:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD before deploying}@postgres:5432/mondrex
       - REDIS_URL=redis://redis:6379
     depends_on:
       postgres:
@@ -78,7 +92,7 @@ services:
       - DATA_DIR=/app/data
       - AUTH_ROOT=/app/auth
       - BOT_PORT=3001
-      - DATABASE_URL=postgresql://mondrex:CHANGE_ME@postgres:5432/mondrex
+      - DATABASE_URL=postgresql://mondrex:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD before deploying}@postgres:5432/mondrex
       - REDIS_URL=redis://redis:6379
     depends_on:
       postgres:
@@ -111,7 +125,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
     environment:
       - POSTGRES_USER=mondrex
-      - POSTGRES_PASSWORD=CHANGE_ME
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD before deploying}
       - POSTGRES_DB=mondrex
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mondrex -d mondrex"]

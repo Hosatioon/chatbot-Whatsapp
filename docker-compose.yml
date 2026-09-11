@@ -16,7 +16,7 @@ services:
     container_name: ordifast-web
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${WEB_PORT:-3000}:3000"
     volumes:
       - ./data:/app/data
       - ./auth:/app/auth
@@ -25,6 +25,15 @@ services:
     environment:
       - NODE_ENV=production
       - REDIS_URL=redis://redis:6379
+      # BUG real encontrado (2026-09-11): el contenedor corre en UTC por
+      # defecto, y el chequeo de horario de atención (isWithinBusinessHours)
+      # usa Date.getHours()/getDay() en hora LOCAL del proceso — sin esto,
+      # a las 3pm hora Colombia (que son las 8pm UTC) el bot pensaba que ya
+      # habían cerrado (configurado 9am-6pm) y mandaba el mensaje de "fuera
+      # de horario" a mitad de la tarde, en pleno horario laboral real.
+      # Esto también afecta los cortes de "hoy/esta semana/este mes" en
+      # las métricas del dashboard.
+      - TZ=America/Bogota
     depends_on:
       - redis
       - bot
@@ -43,5 +52,14 @@ services:
     environment:
       - NODE_ENV=production
       - REDIS_URL=redis://redis:6379
+      # BUG real encontrado (2026-09-11): el contenedor corre en UTC por
+      # defecto, y el chequeo de horario de atención (isWithinBusinessHours)
+      # usa Date.getHours()/getDay() en hora LOCAL del proceso — sin esto,
+      # a las 3pm hora Colombia (que son las 8pm UTC) el bot pensaba que ya
+      # habían cerrado (configurado 9am-6pm) y mandaba el mensaje de "fuera
+      # de horario" a mitad de la tarde, en pleno horario laboral real.
+      # Esto también afecta los cortes de "hoy/esta semana/este mes" en
+      # las métricas del dashboard.
+      - TZ=America/Bogota
     depends_on:
       - redis

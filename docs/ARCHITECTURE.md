@@ -4,19 +4,29 @@
 
 Mondrex es una plataforma multi-tenant de chatbot WhatsApp para negocios de delivery/comercio. Permite a múltiples tenants (negocios) gestionar conversaciones de WhatsApp con IA, pedidos, catálogos de productos y más.
 
-**Stack actual:**
+**Stack actual (lo que realmente corre hoy, `docker-compose.yml`):**
 - **Backend:** Next.js 16 (App Router) + TypeScript
-- **Bot:** Baileys (WhatsApp Web API)
-- **Base de datos:** PostgreSQL (producción) / SQLite (desarrollo)
-- **Cache/Rate Limit:** Redis (Upstash compatible)
-- **Queue:** BullMQ (Redis-backed)
+- **Bot:** Baileys (WhatsApp Web API), embebido en `src/lib/baileys/` + `src/lib/openrouter.ts`, corrido como proceso separado por `scripts/start-bot.ts` (`Dockerfile.bot`)
+- **Base de datos:** SQLite (`src/lib/db.ts`), compartida entre el dashboard y el bot vía el volumen `./data`
+- **Cache/Rate Limit:** rate limiting propio en SQLite (`src/lib/rate-limit.ts`)
 - **Auth:** NextAuth.js con credentials
-- **LLM:** OpenAI via OpenRouter
-- **Despliegue:** Docker + Docker Compose
+- **LLM:** OpenAI via OpenRouter, con function-calling (tools), validación de stock y cálculo de precios/domicilio en el backend
+- **Despliegue:** Docker + Docker Compose (`docker-compose.yml`)
+
+**Stack objetivo (futuro, NO desplegado todavía — `docker-compose.prod.yml` + `bot-service/`):**
+- **Base de datos:** PostgreSQL vía `src/lib/db-pg.ts` / `db-adapter.ts`
+- **Cache/Rate Limit/Queue:** Redis + BullMQ
+- **Bot:** proceso independiente en `bot-service/`, escalable por tenant
+
+`bot-service/` existe en el repo pero **no está terminado**: usa su
+propia SQLite local (no Postgres, no la del dashboard) y no tiene la
+validación de stock/precio del bot actual. Ver `bot-service/README.md`
+antes de tocarlo. Para desplegar, seguí `docs/DEPLOYMENT.md`, que usa el
+stack actual.
 
 ---
 
-## Arquitectura de Producción
+## Arquitectura de Producción (objetivo futuro — no desplegada)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐

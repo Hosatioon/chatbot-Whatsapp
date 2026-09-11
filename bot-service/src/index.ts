@@ -1,6 +1,11 @@
 /**
  * Mondrex Bot Service
  *
+ * ⚠️ NO ESTÁ LISTO PARA PRODUCCIÓN — ver bot-service/README.md.
+ * Usa su propia SQLite local (no Postgres ni la SQLite del dashboard),
+ * y generateReply() no valida stock ni calcula precios reales. Para
+ * lanzar, usá docker-compose.yml + Dockerfile.bot (src/lib/) en su lugar.
+ *
  * Proceso independiente para manejar conexiones WhatsApp via Baileys.
  * Corre en su propio container/proceso, separado de Next.js.
  *
