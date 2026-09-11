@@ -36,7 +36,13 @@ interface Metrics {
     new: number;
     recurring: number;
     total: number;
-    top: { customer_phone: string; customer_name: string | null; order_count: number; total_spent: number; last_order: number }[];
+    top: {
+      customer_phone: string;
+      customer_name: string | null;
+      order_count: number;
+      total_spent: number;
+      last_order: number;
+    }[];
   };
   salesByDay: { date: string; orders: number; revenue: number }[];
 }
@@ -74,13 +80,15 @@ export default function OperationsCenter({ selectedTenantId }: Props) {
     try {
       if (!silent) setLoading(true);
       setError(null);
-      const res = await fetch(`/api/metrics?period=${period}`);
+      const qs = selectedTenantId > 0 ? `&tenantId=${selectedTenantId}` : "";
+      const res = await fetch(`/api/metrics?period=${period}${qs}`);
       if (!res.ok) throw new Error("Error al cargar métricas");
       const data = await res.json();
       setMetrics(data.metrics);
       setPeriodLabel(data.period);
     } catch (err) {
-      if (!silent) setError(err instanceof Error ? err.message : "Error desconocido");
+      if (!silent)
+        setError(err instanceof Error ? err.message : "Error desconocido");
     } finally {
       if (!silent) setLoading(false);
     }
@@ -97,8 +105,16 @@ export default function OperationsCenter({ selectedTenantId }: Props) {
 
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <div className="text-sm text-gray-500">Cargando Centro de Operaciones...</div>
+      <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
+        {[0, 1, 2, 3].map((i) => (
+          <div
+            key={i}
+            className="space-y-2 rounded-lg border border-gray-200 bg-white p-4"
+          >
+            <div className="skeleton h-3 w-20 rounded" />
+            <div className="skeleton h-7 w-16 rounded" />
+          </div>
+        ))}
       </div>
     );
   }
@@ -120,7 +136,9 @@ export default function OperationsCenter({ selectedTenantId }: Props) {
       {/* Header */}
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Centro de Operaciones</h1>
+          <h1 className="text-xl font-bold text-slate-900">
+            Centro de Operaciones
+          </h1>
           <p className="text-sm text-gray-500">Periodo: {periodLabel}</p>
         </div>
         <div className="flex gap-1.5">
@@ -142,74 +160,164 @@ export default function OperationsCenter({ selectedTenantId }: Props) {
 
       {/* Resumen operativo */}
       <div className="mb-6">
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">Operación</h2>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">
+          Operación
+        </h2>
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           {/* Pedidos pendientes */}
           <div className="rounded-xl border border-yellow-200 bg-white p-4">
             <div className="flex items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-yellow-100 text-yellow-700">
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                <svg
+                  className="h-4 w-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
               </div>
-              <span className="text-xs font-medium text-gray-500">Pendientes</span>
+              <span className="text-xs font-medium text-gray-500">
+                Pendientes
+              </span>
             </div>
-            <div className="mt-2 text-2xl font-bold text-slate-900">{m.orders.pending}</div>
+            <div className="mt-2 text-2xl font-bold text-slate-900">
+              {m.orders.pending}
+            </div>
           </div>
 
           {/* Pedidos confirmados */}
           <div className="rounded-xl border border-blue-200 bg-white p-4">
             <div className="flex items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-100 text-blue-700">
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                <svg
+                  className="h-4 w-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
               </div>
-              <span className="text-xs font-medium text-gray-500">Confirmados</span>
+              <span className="text-xs font-medium text-gray-500">
+                Confirmados
+              </span>
             </div>
-            <div className="mt-2 text-2xl font-bold text-slate-900">{m.orders.confirmed}</div>
+            <div className="mt-2 text-2xl font-bold text-slate-900">
+              {m.orders.confirmed}
+            </div>
           </div>
 
           {/* En preparación */}
           <div className="rounded-xl border border-purple-200 bg-white p-4">
             <div className="flex items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-purple-100 text-purple-700">
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+                <svg
+                  className="h-4 w-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
+                  />
+                </svg>
               </div>
-              <span className="text-xs font-medium text-gray-500">Preparando</span>
+              <span className="text-xs font-medium text-gray-500">
+                Preparando
+              </span>
             </div>
-            <div className="mt-2 text-2xl font-bold text-slate-900">{m.orders.preparing}</div>
+            <div className="mt-2 text-2xl font-bold text-slate-900">
+              {m.orders.preparing}
+            </div>
           </div>
 
           {/* En camino */}
           <div className="rounded-xl border border-orange-200 bg-white p-4">
             <div className="flex items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-100 text-orange-700">
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17a2 2 0 11-4 0 2 2 0 014 0zM19 17a2 2 0 11-4 0 2 2 0 014 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16V6a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h1m8-1a1 1 0 01-1 1H9m4-1V8a1 1 0 011-1h2.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V16a1 1 0 01-1 1h-1m-6-1a1 1 0 001 1h1" /></svg>
+                <svg
+                  className="h-4 w-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M9 17a2 2 0 11-4 0 2 2 0 014 0zM19 17a2 2 0 11-4 0 2 2 0 014 0z"
+                  />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M13 16V6a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h1m8-1a1 1 0 01-1 1H9m4-1V8a1 1 0 011-1h2.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V16a1 1 0 01-1 1h-1m-6-1a1 1 0 001 1h1"
+                  />
+                </svg>
               </div>
-              <span className="text-xs font-medium text-gray-500">En camino</span>
+              <span className="text-xs font-medium text-gray-500">
+                En camino
+              </span>
             </div>
-            <div className="mt-2 text-2xl font-bold text-slate-900">{m.orders.onTheWay}</div>
+            <div className="mt-2 text-2xl font-bold text-slate-900">
+              {m.orders.onTheWay}
+            </div>
           </div>
         </div>
       </div>
 
       {/* Conversaciones */}
       <div className="mb-6">
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">Conversaciones</h2>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">
+          Conversaciones
+        </h2>
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <div className="rounded-xl border border-gray-200 bg-white p-4">
-            <span className="text-xs font-medium text-gray-500">Conversaciones del periodo</span>
-            <div className="mt-1 text-2xl font-bold text-slate-900">{m.conversations.today}</div>
+            <span className="text-xs font-medium text-gray-500">
+              Conversaciones del periodo
+            </span>
+            <div className="mt-1 text-2xl font-bold text-slate-900">
+              {m.conversations.today}
+            </div>
           </div>
           <div className="rounded-xl border border-emerald-200 bg-white p-4">
-            <span className="text-xs font-medium text-gray-500">Atendidas por IA</span>
-            <div className="mt-1 text-2xl font-bold text-emerald-700">{m.conversations.byAI}</div>
+            <span className="text-xs font-medium text-gray-500">
+              Atendidas por IA
+            </span>
+            <div className="mt-1 text-2xl font-bold text-emerald-700">
+              {m.conversations.byAI}
+            </div>
           </div>
           <div className="rounded-xl border border-amber-200 bg-white p-4">
-            <span className="text-xs font-medium text-gray-500">Transferidas a humano</span>
-            <div className="mt-1 text-2xl font-bold text-amber-700">{m.conversations.byHuman}</div>
+            <span className="text-xs font-medium text-gray-500">
+              Transferidas a humano
+            </span>
+            <div className="mt-1 text-2xl font-bold text-amber-700">
+              {m.conversations.byHuman}
+            </div>
           </div>
           <div className="rounded-xl border border-gray-200 bg-white p-4">
-            <span className="text-xs font-medium text-gray-500">Tiempo prom. respuesta</span>
+            <span className="text-xs font-medium text-gray-500">
+              Tiempo prom. respuesta
+            </span>
             <div className="mt-1 text-2xl font-bold text-slate-900">
-              {m.conversations.avgResponseTime ? formatTime(m.conversations.avgResponseTime) : "—"}
+              {m.conversations.avgResponseTime
+                ? formatTime(m.conversations.avgResponseTime)
+                : "—"}
             </div>
           </div>
         </div>
@@ -217,39 +325,67 @@ export default function OperationsCenter({ selectedTenantId }: Props) {
 
       {/* Ventas */}
       <div className="mb-6">
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">Ventas</h2>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">
+          Ventas
+        </h2>
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <div className="rounded-xl border border-green-200 bg-white p-4">
-            <span className="text-xs font-medium text-gray-500">Pedidos creados</span>
-            <div className="mt-1 text-2xl font-bold text-slate-900">{m.orders.created}</div>
+            <span className="text-xs font-medium text-gray-500">
+              Pedidos creados
+            </span>
+            <div className="mt-1 text-2xl font-bold text-slate-900">
+              {m.orders.created}
+            </div>
           </div>
           <div className="rounded-xl border border-green-200 bg-white p-4">
-            <span className="text-xs font-medium text-gray-500">Entregados</span>
-            <div className="mt-1 text-2xl font-bold text-green-700">{m.orders.delivered}</div>
+            <span className="text-xs font-medium text-gray-500">
+              Entregados
+            </span>
+            <div className="mt-1 text-2xl font-bold text-green-700">
+              {m.orders.delivered}
+            </div>
           </div>
           <div className="rounded-xl border border-red-200 bg-white p-4">
-            <span className="text-xs font-medium text-gray-500">Cancelados</span>
-            <div className="mt-1 text-2xl font-bold text-red-700">{m.orders.cancelled}</div>
+            <span className="text-xs font-medium text-gray-500">
+              Cancelados
+            </span>
+            <div className="mt-1 text-2xl font-bold text-red-700">
+              {m.orders.cancelled}
+            </div>
             {m.orders.cancellationRate > 0 && (
-              <div className="text-xs text-red-500">{m.orders.cancellationRate}% tasa</div>
+              <div className="text-xs text-red-500">
+                {m.orders.cancellationRate}% tasa
+              </div>
             )}
           </div>
           <div className="rounded-xl border border-green-200 bg-white p-4">
-            <span className="text-xs font-medium text-gray-500">Valor vendido ({periodLabel})</span>
-            <div className="mt-1 text-2xl font-bold text-green-700">{formatCurrency(m.sales.today)}</div>
+            <span className="text-xs font-medium text-gray-500">
+              Valor vendido ({periodLabel})
+            </span>
+            <div className="mt-1 text-2xl font-bold text-green-700">
+              {formatCurrency(m.sales.today)}
+            </div>
           </div>
         </div>
 
         {/* Valor del mes + tiempo entrega */}
         <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
           <div className="rounded-xl border border-gray-200 bg-white p-4">
-            <span className="text-xs font-medium text-gray-500">Valor vendido este mes</span>
-            <div className="mt-1 text-2xl font-bold text-slate-900">{formatCurrency(m.sales.month)}</div>
+            <span className="text-xs font-medium text-gray-500">
+              Valor vendido este mes
+            </span>
+            <div className="mt-1 text-2xl font-bold text-slate-900">
+              {formatCurrency(m.sales.month)}
+            </div>
           </div>
           <div className="rounded-xl border border-gray-200 bg-white p-4">
-            <span className="text-xs font-medium text-gray-500">Tiempo prom. pedido → entrega</span>
+            <span className="text-xs font-medium text-gray-500">
+              Tiempo prom. pedido → entrega
+            </span>
             <div className="mt-1 text-2xl font-bold text-slate-900">
-              {m.orders.avgDeliveryTime ? formatTime(m.orders.avgDeliveryTime) : "—"}
+              {m.orders.avgDeliveryTime
+                ? formatTime(m.orders.avgDeliveryTime)
+                : "—"}
             </div>
           </div>
         </div>
@@ -266,7 +402,9 @@ export default function OperationsCenter({ selectedTenantId }: Props) {
           {/* Más vendidos */}
           {m.products.top.length > 0 && (
             <div className="rounded-xl border border-gray-200 bg-white p-4">
-              <h3 className="mb-3 text-xs font-semibold text-emerald-700">Más vendidos</h3>
+              <h3 className="mb-3 text-xs font-semibold text-emerald-700">
+                Más vendidos
+              </h3>
               <div className="space-y-2">
                 {m.products.top.map((p, idx) => (
                   <div key={idx} className="flex items-center justify-between">
@@ -274,11 +412,17 @@ export default function OperationsCenter({ selectedTenantId }: Props) {
                       <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-100 text-xs font-bold text-emerald-700">
                         {idx + 1}
                       </span>
-                      <span className="text-sm font-medium text-slate-900">{p.product_name}</span>
+                      <span className="text-sm font-medium text-slate-900">
+                        {p.product_name}
+                      </span>
                     </div>
                     <div className="flex items-center gap-3">
-                      <span className="text-xs text-gray-500">{p.qty} und.</span>
-                      <span className="text-sm font-semibold text-slate-900">{formatCurrency(p.revenue)}</span>
+                      <span className="text-xs text-gray-500">
+                        {p.qty} und.
+                      </span>
+                      <span className="text-sm font-semibold text-slate-900">
+                        {formatCurrency(p.revenue)}
+                      </span>
                     </div>
                   </div>
                 ))}
@@ -289,7 +433,9 @@ export default function OperationsCenter({ selectedTenantId }: Props) {
           {/* Menos vendidos */}
           {m.products.bottom.length > 0 && (
             <div className="rounded-xl border border-gray-200 bg-white p-4">
-              <h3 className="mb-3 text-xs font-semibold text-orange-700">Menos vendidos</h3>
+              <h3 className="mb-3 text-xs font-semibold text-orange-700">
+                Menos vendidos
+              </h3>
               <div className="space-y-2">
                 {m.products.bottom.map((p, idx) => (
                   <div key={idx} className="flex items-center justify-between">
@@ -297,11 +443,17 @@ export default function OperationsCenter({ selectedTenantId }: Props) {
                       <span className="flex h-5 w-5 items-center justify-center rounded-full bg-orange-100 text-xs font-bold text-orange-700">
                         {idx + 1}
                       </span>
-                      <span className="text-sm font-medium text-slate-900">{p.product_name}</span>
+                      <span className="text-sm font-medium text-slate-900">
+                        {p.product_name}
+                      </span>
                     </div>
                     <div className="flex items-center gap-3">
-                      <span className="text-xs text-gray-500">{p.qty} und.</span>
-                      <span className="text-sm font-semibold text-slate-900">{formatCurrency(p.revenue)}</span>
+                      <span className="text-xs text-gray-500">
+                        {p.qty} und.
+                      </span>
+                      <span className="text-sm font-semibold text-slate-900">
+                        {formatCurrency(p.revenue)}
+                      </span>
                     </div>
                   </div>
                 ))}
@@ -314,12 +466,17 @@ export default function OperationsCenter({ selectedTenantId }: Props) {
         {m.products.noSales.length > 0 && (
           <div className="mt-3 rounded-xl border border-gray-200 bg-white p-4">
             <h3 className="mb-3 text-xs font-semibold text-gray-500">
-              Sin ventas en {periodLabel} · {m.products.noSales.length} productos
+              Sin ventas en {periodLabel} · {m.products.noSales.length}{" "}
+              productos
             </h3>
             <div className="flex flex-wrap gap-2">
               {m.products.noSales.map((p, idx) => (
-                <span key={idx} className="rounded-lg bg-gray-100 px-2.5 py-1 text-xs text-gray-600">
-                  {p.name} <span className="text-gray-400">· stock: {p.stock}</span>
+                <span
+                  key={idx}
+                  className="rounded-lg bg-gray-100 px-2.5 py-1 text-xs text-gray-600"
+                >
+                  {p.name}{" "}
+                  <span className="text-gray-400">· stock: {p.stock}</span>
                 </span>
               ))}
             </div>
@@ -335,8 +492,12 @@ export default function OperationsCenter({ selectedTenantId }: Props) {
             <div className="space-y-2">
               {m.products.lowStock.map((p, idx) => (
                 <div key={idx} className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-slate-900">{p.name}</span>
-                  <span className={`text-sm font-bold ${p.stock === 0 ? "text-red-600" : "text-red-500"}`}>
+                  <span className="text-sm font-medium text-slate-900">
+                    {p.name}
+                  </span>
+                  <span
+                    className={`text-sm font-bold ${p.stock === 0 ? "text-red-600" : "text-red-500"}`}
+                  >
                     {p.stock} und.
                   </span>
                 </div>
@@ -348,26 +509,38 @@ export default function OperationsCenter({ selectedTenantId }: Props) {
 
       {/* Clientes */}
       <div className="mb-6">
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">Clientes</h2>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">
+          Clientes
+        </h2>
         <div className="grid grid-cols-3 gap-3">
           <div className="rounded-xl border border-gray-200 bg-white p-4">
             <span className="text-xs font-medium text-gray-500">Total</span>
-            <div className="mt-1 text-2xl font-bold text-slate-900">{m.customers.total}</div>
+            <div className="mt-1 text-2xl font-bold text-slate-900">
+              {m.customers.total}
+            </div>
           </div>
           <div className="rounded-xl border border-gray-200 bg-white p-4">
             <span className="text-xs font-medium text-gray-500">Nuevos</span>
-            <div className="mt-1 text-2xl font-bold text-slate-900">{m.customers.new}</div>
+            <div className="mt-1 text-2xl font-bold text-slate-900">
+              {m.customers.new}
+            </div>
           </div>
           <div className="rounded-xl border border-gray-200 bg-white p-4">
-            <span className="text-xs font-medium text-gray-500">Recurrentes</span>
-            <div className="mt-1 text-2xl font-bold text-slate-900">{m.customers.recurring}</div>
+            <span className="text-xs font-medium text-gray-500">
+              Recurrentes
+            </span>
+            <div className="mt-1 text-2xl font-bold text-slate-900">
+              {m.customers.recurring}
+            </div>
           </div>
         </div>
 
         {/* Top clientes */}
         {m.customers.top.length > 0 && (
           <div className="mt-3 rounded-xl border border-gray-200 bg-white p-4">
-            <h3 className="mb-3 text-xs font-semibold text-gray-500">Clientes más frecuentes</h3>
+            <h3 className="mb-3 text-xs font-semibold text-gray-500">
+              Clientes más frecuentes
+            </h3>
             <div className="space-y-2">
               {m.customers.top.map((c, idx) => (
                 <div key={idx} className="flex items-center justify-between">
@@ -380,15 +553,24 @@ export default function OperationsCenter({ selectedTenantId }: Props) {
                         {c.customer_name || c.customer_phone}
                       </span>
                       {c.customer_name && (
-                        <span className="ml-2 text-xs text-gray-400">{c.customer_phone}</span>
+                        <span className="ml-2 text-xs text-gray-400">
+                          {c.customer_phone}
+                        </span>
                       )}
                     </div>
                   </div>
                   <div className="flex items-center gap-4">
-                    <span className="text-xs text-gray-500">{c.order_count} ped.</span>
-                    <span className="text-sm font-semibold text-slate-900">{formatCurrency(c.total_spent)}</span>
+                    <span className="text-xs text-gray-500">
+                      {c.order_count} ped.
+                    </span>
+                    <span className="text-sm font-semibold text-slate-900">
+                      {formatCurrency(c.total_spent)}
+                    </span>
                     <span className="text-xs text-gray-400">
-                      {new Date(c.last_order * 1000).toLocaleDateString("es-CO", { day: "2-digit", month: "short" })}
+                      {new Date(c.last_order * 1000).toLocaleDateString(
+                        "es-CO",
+                        { day: "2-digit", month: "short" },
+                      )}
                     </span>
                   </div>
                 </div>
@@ -401,16 +583,24 @@ export default function OperationsCenter({ selectedTenantId }: Props) {
       {/* Ventas por día */}
       {m.salesByDay.length > 0 && (
         <div className="mb-6">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">Ventas por día (últimos 7 días)</h2>
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">
+            Ventas por día (últimos 7 días)
+          </h2>
           <div className="rounded-xl border border-gray-200 bg-white p-4">
             <div className="space-y-2">
               {m.salesByDay.map((day) => {
-                const maxRevenue = Math.max(...m.salesByDay.map((d) => d.revenue), 1);
+                const maxRevenue = Math.max(
+                  ...m.salesByDay.map((d) => d.revenue),
+                  1,
+                );
                 const barWidth = Math.round((day.revenue / maxRevenue) * 100);
                 return (
                   <div key={day.date} className="flex items-center gap-3">
                     <span className="w-24 text-xs text-gray-500">
-                      {new Date(day.date + "T00:00:00").toLocaleDateString("es-CO", { weekday: "short", day: "2-digit", month: "2-digit" })}
+                      {new Date(day.date + "T00:00:00").toLocaleDateString(
+                        "es-CO",
+                        { weekday: "short", day: "2-digit", month: "2-digit" },
+                      )}
                     </span>
                     <div className="flex-1">
                       <div className="h-6 rounded bg-gray-100 overflow-hidden">
@@ -420,8 +610,12 @@ export default function OperationsCenter({ selectedTenantId }: Props) {
                         />
                       </div>
                     </div>
-                    <span className="w-20 text-right text-sm font-medium text-slate-900">{formatCurrency(day.revenue)}</span>
-                    <span className="w-12 text-right text-xs text-gray-500">{day.orders} ped.</span>
+                    <span className="w-20 text-right text-sm font-medium text-slate-900">
+                      {formatCurrency(day.revenue)}
+                    </span>
+                    <span className="w-12 text-right text-xs text-gray-500">
+                      {day.orders} ped.
+                    </span>
                   </div>
                 );
               })}

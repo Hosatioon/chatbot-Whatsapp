@@ -36,14 +36,14 @@ export default function ConfirmDialog({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in">
       {/* Overlay */}
       <div
         className="absolute inset-0 bg-black/30 backdrop-blur-sm"
         onClick={onCancel}
       />
       {/* Modal */}
-      <div className="relative mx-4 max-w-sm rounded-xl border border-gray-200 bg-white p-6 shadow-xl">
+      <div className="animate-scale-in relative mx-4 max-w-sm rounded-xl border border-gray-200 bg-white p-6 shadow-xl">
         <div className="mb-4">
           <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
           <p className="mt-1 text-sm text-gray-600">{description}</p>

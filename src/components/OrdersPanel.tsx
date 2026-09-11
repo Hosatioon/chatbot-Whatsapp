@@ -7,6 +7,7 @@ import type {
   OrderItem,
   OrderHistoryEntry,
 } from "@/lib/db";
+import ConfirmDialog from "./ConfirmDialog";
 
 // Reproducir un "ding" de notificación con Web Audio API (sin archivos)
 function playNotificationSound() {
@@ -384,14 +385,16 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
   return (
     <div className="flex h-full">
       {/* Lista de pedidos */}
-      <div className="w-1/2 border-r border-gray-200 bg-white">
+      <div
+        className={`${selectedOrder ? "hidden md:block" : "block"} w-full border-r border-gray-200 bg-white md:w-1/2`}
+      >
         <div className="border-b border-gray-200 p-4">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-lg font-semibold text-slate-900">Pedidos</h2>
             <div className="flex items-center gap-3">
               <button
                 onClick={toggleNotifications}
-                className={`flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-medium ${notificationsEnabled ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-gray-300 bg-white text-gray-600"}`}
+                className={`flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-medium transition-colors ${notificationsEnabled ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-gray-300 bg-white text-gray-600 hover:bg-gray-50"}`}
               >
                 <span>{notificationsEnabled ? "🔔" : "🔕"}</span>
                 <span>{notificationsEnabled ? "ON" : "Alertas"}</span>
@@ -422,7 +425,7 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
               <button
                 key={df.value}
                 onClick={() => setDateFilter(df.value)}
-                className={`px-2.5 py-1 rounded-full text-xs font-medium ${dateFilter === df.value ? "bg-slate-900 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${dateFilter === df.value ? "bg-slate-900 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
               >
                 {df.label}
               </button>
@@ -433,7 +436,7 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => setSelectedStatus("ALL")}
-              className={`px-3 py-1 rounded-full text-xs font-medium ${selectedStatus === "ALL" ? "bg-slate-900 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
+              className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${selectedStatus === "ALL" ? "bg-slate-900 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
             >
               Todos
             </button>
@@ -441,7 +444,7 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
               <button
                 key={status}
                 onClick={() => setSelectedStatus(status)}
-                className={`px-3 py-1 rounded-full text-xs font-medium ${selectedStatus === status ? "bg-slate-900 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${selectedStatus === status ? "bg-slate-900 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
               >
                 {STATUS_LABELS[status]}
               </button>
@@ -455,8 +458,19 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
           style={{ height: "calc(100% - 180px)" }}
         >
           {loading ? (
-            <div className="p-4 text-center text-sm text-gray-500">
-              Cargando pedidos...
+            <div className="divide-y divide-gray-100">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <div key={i} className="p-4">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1 space-y-2">
+                      <div className="skeleton h-4 w-32 rounded" />
+                      <div className="skeleton h-3 w-24 rounded" />
+                      <div className="skeleton h-3 w-40 rounded" />
+                    </div>
+                    <div className="skeleton h-3 w-12 rounded" />
+                  </div>
+                </div>
+              ))}
             </div>
           ) : error ? (
             <div className="p-4 text-center text-sm text-red-600">{error}</div>
@@ -472,7 +486,7 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
                 <div
                   key={order.id}
                   onClick={() => loadOrderDetail(order.id)}
-                  className={`p-4 cursor-pointer hover:bg-gray-50 ${selectedOrder?.id === order.id ? "bg-blue-50" : ""}`}
+                  className={`p-4 cursor-pointer transition-colors hover:bg-gray-50 ${selectedOrder?.id === order.id ? "bg-blue-50 hover:bg-blue-50" : ""}`}
                 >
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
@@ -512,9 +526,11 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
       </div>
 
       {/* Detalle del pedido */}
-      <div className="flex-1 bg-gray-50">
+      <div
+        className={`${selectedOrder ? "block" : "hidden md:block"} flex-1 bg-gray-50`}
+      >
         {selectedOrder ? (
-          <div className="h-full flex flex-col">
+          <div key={selectedOrder.id} className="h-full flex flex-col animate-fade-in">
             <div className="bg-white border-b border-gray-200 p-4">
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-lg font-semibold text-slate-900">
@@ -523,23 +539,23 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => handleDuplicate(selectedOrder.id)}
-                    className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                    className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 sm:px-3"
                     title="Duplicar pedido"
                   >
-                    📋 Duplicar
+                    📋 <span className="hidden sm:inline">Duplicar</span>
                   </button>
                   {canDelete && (
                     <button
                       onClick={() => setShowDeleteModal(true)}
-                      className="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100"
+                      className="rounded-lg bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-100 sm:px-3"
                       title="Eliminar (solo pendientes)"
                     >
-                      🗑 Eliminar
+                      🗑 <span className="hidden sm:inline">Eliminar</span>
                     </button>
                   )}
                   <button
                     onClick={() => setSelectedOrder(null)}
-                    className="text-gray-400 hover:text-gray-600"
+                    className="text-gray-400 transition-colors hover:text-gray-600"
                   >
                     <svg
                       className="w-5 h-5"
@@ -565,19 +581,19 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
                     <div key={status} className="flex items-center">
                       <div className="flex flex-col items-center">
                         <div
-                          className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium ${idx <= currentStepIndex ? STATUS_COLORS[status].split(" ")[0] + " " + STATUS_COLORS[status].split(" ")[1] : "bg-gray-100 text-gray-400"}`}
+                          className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium transition-colors duration-300 ${idx <= currentStepIndex ? STATUS_COLORS[status].split(" ")[0] + " " + STATUS_COLORS[status].split(" ")[1] : "bg-gray-100 text-gray-400"}`}
                         >
                           {idx < currentStepIndex ? "✓" : idx + 1}
                         </div>
                         <span
-                          className={`text-[10px] mt-1 ${idx <= currentStepIndex ? "text-gray-700 font-medium" : "text-gray-400"}`}
+                          className={`text-[10px] mt-1 transition-colors duration-300 ${idx <= currentStepIndex ? "text-gray-700 font-medium" : "text-gray-400"}`}
                         >
                           {STATUS_LABELS[status]}
                         </span>
                       </div>
                       {idx < FLOW_STATUSES.length - 1 && (
                         <div
-                          className={`w-6 h-0.5 mx-1 ${idx < currentStepIndex ? "bg-green-400" : "bg-gray-200"}`}
+                          className={`w-6 h-0.5 mx-1 transition-colors duration-300 ${idx < currentStepIndex ? "bg-green-400" : "bg-gray-200"}`}
                         />
                       )}
                     </div>
@@ -602,7 +618,7 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
                   {canEditFields && !editing && (
                     <button
                       onClick={startEdit}
-                      className="text-xs text-blue-600 hover:text-blue-800"
+                      className="text-xs text-blue-600 transition-colors hover:text-blue-800"
                     >
                       Editar
                     </button>
@@ -646,13 +662,13 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
                     <div className="flex gap-2">
                       <button
                         onClick={saveEdit}
-                        className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700"
+                        className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-blue-700"
                       >
                         Guardar
                       </button>
                       <button
                         onClick={() => setEditing(false)}
-                        className="rounded bg-gray-300 px-3 py-1 text-xs font-medium text-gray-700"
+                        className="rounded bg-gray-300 px-3 py-1 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-400"
                       >
                         Cancelar
                       </button>
@@ -692,12 +708,65 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
                         })}
                       </span>
                     </div>
-                    {selectedOrder.notes && (
-                      <div>
-                        <span className="text-gray-500">Notas:</span>{" "}
-                        {selectedOrder.notes}
-                      </div>
-                    )}
+                    {selectedOrder.notes &&
+                      (() => {
+                        const deliveryMatch = selectedOrder.notes.match(
+                          /Entrega:\s*(.*?)(?:\.\s*Pago:|$)/,
+                        );
+                        const paymentMatch =
+                          selectedOrder.notes.match(/Pago:\s*(.*)$/);
+                        const deliveryAddr = deliveryMatch?.[1]?.trim();
+                        const paymentMethod = paymentMatch?.[1]?.trim();
+                        const hasLat = selectedOrder.delivery_lat != null;
+                        const hasLng = selectedOrder.delivery_lng != null;
+                        const mapsUrl =
+                          hasLat && hasLng
+                            ? `https://www.google.com/maps?q=${selectedOrder.delivery_lat},${selectedOrder.delivery_lng}`
+                            : null;
+
+                        if (deliveryAddr || paymentMethod) {
+                          return (
+                            <div className="space-y-1.5">
+                              {deliveryAddr && (
+                                <div className="flex items-start gap-2">
+                                  <span className="text-gray-500 whitespace-nowrap">
+                                    📍 Entrega:
+                                  </span>
+                                  <span className="font-medium">
+                                    {deliveryAddr}
+                                    {mapsUrl && (
+                                      <a
+                                        href={mapsUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="ml-2 text-blue-600 hover:text-blue-800 text-xs underline"
+                                      >
+                                        Ver en Maps
+                                      </a>
+                                    )}
+                                  </span>
+                                </div>
+                              )}
+                              {paymentMethod && (
+                                <div className="flex items-start gap-2">
+                                  <span className="text-gray-500 whitespace-nowrap">
+                                    💳 Pago:
+                                  </span>
+                                  <span className="font-medium">
+                                    {paymentMethod}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        }
+                        return (
+                          <div>
+                            <span className="text-gray-500">Notas:</span>{" "}
+                            {selectedOrder.notes}
+                          </div>
+                        );
+                      })()}
                   </div>
                 )}
               </div>
@@ -717,7 +786,7 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
                         onClick={() =>
                           handleStatusChange(selectedOrder.id, status)
                         }
-                        className={`px-3 py-2 rounded-lg text-xs font-medium border ${STATUS_COLORS[status]} hover:opacity-80`}
+                        className={`px-3 py-2 rounded-lg text-xs font-medium border transition-opacity ${STATUS_COLORS[status]} hover:opacity-80`}
                       >
                         {STATUS_LABELS[status]}
                       </button>
@@ -823,16 +892,16 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
 
       {/* Modal de cancelación */}
       {showCancelModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-xl">
-            <h3 className="mb-3 text-lg font-semibold text-gray-900">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4 animate-fade-in">
+          <div className="animate-scale-in w-full max-w-sm rounded-xl border border-gray-200 bg-white p-6 shadow-xl">
+            <h3 className="mb-3 text-lg font-semibold text-slate-900">
               ¿Por qué se cancela?
             </h3>
             <div className="space-y-2 mb-4">
               {CANCEL_REASONS.map((reason) => (
                 <label
                   key={reason}
-                  className="flex items-center gap-2 cursor-pointer"
+                  className="flex items-center gap-2 cursor-pointer rounded-lg px-2 py-1.5 -mx-2 transition-colors hover:bg-gray-50"
                 >
                   <input
                     type="radio"
@@ -840,7 +909,7 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
                     value={reason}
                     checked={cancelReason === reason}
                     onChange={(e) => setCancelReason(e.target.value)}
-                    className="text-red-600"
+                    className="text-red-600 focus:ring-red-500"
                   />
                   <span className="text-sm text-gray-700">{reason}</span>
                 </label>
@@ -852,14 +921,14 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
                   setShowCancelModal(false);
                   setCancelReason("");
                 }}
-                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
               >
                 Cerrar
               </button>
               <button
                 onClick={confirmCancel}
                 disabled={!cancelReason}
-                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50 disabled:hover:bg-red-600"
               >
                 Confirmar
               </button>
@@ -869,33 +938,15 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
       )}
 
       {/* Modal de eliminación */}
-      {showDeleteModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-xl">
-            <h3 className="mb-2 text-lg font-semibold text-gray-900">
-              ¿Eliminar pedido?
-            </h3>
-            <p className="mb-6 text-sm text-gray-600">
-              Estás por eliminar el pedido <strong>#{selectedOrder?.id}</strong>
-              . Esta acción no se puede deshacer.
-            </p>
-            <div className="flex justify-end gap-3">
-              <button
-                onClick={() => setShowDeleteModal(false)}
-                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={handleDelete}
-                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
-              >
-                Sí, eliminar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={showDeleteModal}
+        title="¿Eliminar pedido?"
+        description={`Estás por eliminar el pedido #${selectedOrder?.id ?? ""}. Esta acción no se puede deshacer.`}
+        confirmText="Sí, eliminar"
+        destructive
+        onConfirm={handleDelete}
+        onCancel={() => setShowDeleteModal(false)}
+      />
     </div>
   );
 }

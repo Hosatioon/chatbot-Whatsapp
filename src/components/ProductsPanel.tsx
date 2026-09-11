@@ -46,8 +46,8 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
   const [editingRow, setEditingRow] = useState<number | "new" | null>(null);
   const [form, setForm] = useState({
     name: "",
-    price: 0,
-    stock: 0,
+    price: "",
+    stock: "",
     description: "",
   });
   const [importing, setImporting] = useState(false);
@@ -109,29 +109,33 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
 
   const handleAdd = () => {
     setEditingRow("new");
-    setForm({ name: "", price: 0, stock: 0, description: "" });
+    setForm({ name: "", price: "", stock: "", description: "" });
   };
 
   const handleEdit = (p: Product) => {
     setEditingRow(p.id);
     setForm({
       name: p.name,
-      price: p.price,
-      stock: p.stock,
+      price: String(p.price),
+      stock: String(p.stock),
       description: p.description ?? "",
     });
   };
 
   const handleCancel = () => {
     setEditingRow(null);
-    setForm({ name: "", price: 0, stock: 0, description: "" });
+    setForm({ name: "", price: "", stock: "", description: "" });
   };
 
   const handleSave = async () => {
     if (!form.name.trim()) return;
+    const stockNum = parseInt(form.stock, 10);
+    const priceNum = parseInt(form.price, 10);
     try {
       const payload = {
-        ...form,
+        name: form.name,
+        price: isNaN(priceNum) ? 0 : priceNum,
+        stock: isNaN(stockNum) ? 0 : stockNum,
         description: form.description.trim() || undefined,
         tenantId: selectedTenantId > 0 ? selectedTenantId : undefined,
       };
@@ -207,8 +211,25 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
 
   if (loading) {
     return (
-      <div className="flex h-64 items-center justify-center text-sm text-gray-500">
-        Cargando productos...
+      <div className="flex flex-col gap-4 p-4">
+        <div className="flex items-center justify-between">
+          <div className="skeleton h-6 w-28 rounded" />
+          <div className="skeleton h-8 w-32 rounded-lg" />
+        </div>
+        <div className="overflow-hidden rounded-lg border border-gray-200">
+          {[0, 1, 2, 3, 4, 5].map((i) => (
+            <div
+              key={i}
+              className="flex items-center gap-4 border-b border-gray-100 px-4 py-3 last:border-0"
+            >
+              <div className="skeleton h-4 w-40 rounded" />
+              <div className="skeleton h-4 flex-1 rounded" />
+              <div className="skeleton h-4 w-16 rounded" />
+              <div className="skeleton h-6 w-10 rounded-md" />
+              <div className="skeleton h-5 w-16 rounded-full" />
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
@@ -271,19 +292,27 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
                 {importResult.detectedArchitecture}
               </code>
               <div className="mt-1">
-              {importResult.sheets.map((sheet, idx) => (
-                <div key={idx} className="mt-1">
-                  <span className="font-semibold">Hoja: {sheet.sheetName}</span> ({sheet.productsFound} productos)
-                  <div className="ml-2">
-                    Columnas: {sheet.columns.map((col, cidx) => (
-                      <span key={cidx} className="mr-2">
-                        <code className="rounded bg-white px-1">{col.header}</code>
-                        <span className="text-gray-500 ml-1">({col.type})</span>
-                      </span>
-                    ))}
+                {importResult.sheets.map((sheet, idx) => (
+                  <div key={idx} className="mt-1">
+                    <span className="font-semibold">
+                      Hoja: {sheet.sheetName}
+                    </span>{" "}
+                    ({sheet.productsFound} productos)
+                    <div className="ml-2">
+                      Columnas:{" "}
+                      {sheet.columns.map((col, cidx) => (
+                        <span key={cidx} className="mr-2">
+                          <code className="rounded bg-white px-1">
+                            {col.header}
+                          </code>
+                          <span className="text-gray-500 ml-1">
+                            ({col.type})
+                          </span>
+                        </span>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
               </div>
             </div>
             {importResult.errors.length > 0 && (
@@ -306,34 +335,34 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
         </div>
       )}
 
-      <div className="overflow-x-auto rounded-xl border border-gray-200">
-        <table className="w-full text-sm">
-          <thead className="bg-gray-50">
+      <div className="overflow-x-auto rounded-xl border border-gray-300 bg-white shadow-sm">
+        <table className="w-full border-collapse text-sm">
+          <thead className="bg-gray-100">
             <tr>
-              <th className="px-4 py-2 text-left font-medium text-gray-700">
+              <th className="border-b border-r border-gray-300 px-4 py-3 text-left font-semibold text-gray-700">
                 Nombre
               </th>
-              <th className="px-4 py-2 text-left font-medium text-gray-700">
+              <th className="border-b border-r border-gray-300 px-4 py-3 text-left font-semibold text-gray-700">
                 Descripción
               </th>
-              <th className="px-4 py-2 text-right font-medium text-gray-700">
+              <th className="border-b border-r border-gray-300 px-4 py-3 text-right font-semibold text-gray-700">
                 Precio
               </th>
-              <th className="px-4 py-2 text-right font-medium text-gray-700">
+              <th className="border-b border-r border-gray-300 px-4 py-3 text-center font-semibold text-gray-700">
                 Stock
               </th>
-              <th className="px-4 py-2 text-center font-medium text-gray-700">
+              <th className="border-b border-r border-gray-300 px-4 py-3 text-center font-semibold text-gray-700">
                 Estado
               </th>
-              <th className="px-4 py-2 text-center font-medium text-gray-700">
+              <th className="border-b border-gray-300 px-4 py-3 text-center font-semibold text-gray-700">
                 Acciones
               </th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-100">
+          <tbody>
             {editingRow === "new" && (
               <tr className="bg-emerald-50">
-                <td className="px-4 py-2">
+                <td className="border-b border-r border-gray-200 px-4 py-2">
                   <input
                     type="text"
                     value={form.name}
@@ -343,7 +372,7 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
                     autoFocus
                   />
                 </td>
-                <td className="px-4 py-2">
+                <td className="border-b border-r border-gray-200 px-4 py-2">
                   <input
                     type="text"
                     value={form.description}
@@ -354,32 +383,34 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
                     className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
                   />
                 </td>
-                <td className="px-4 py-2">
+                <td className="border-b border-r border-gray-200 px-4 py-2">
                   <input
                     type="number"
                     value={form.price}
                     onChange={(e) =>
-                      setForm({ ...form, price: Number(e.target.value) })
+                      setForm({ ...form, price: e.target.value })
                     }
+                    placeholder="0"
                     className="w-full rounded border border-gray-300 px-2 py-1 text-sm text-right"
                   />
                 </td>
-                <td className="px-4 py-2">
+                <td className="border-b border-r border-gray-200 px-4 py-2">
                   <input
                     type="number"
                     value={form.stock}
                     onChange={(e) =>
-                      setForm({ ...form, stock: Number(e.target.value) })
+                      setForm({ ...form, stock: e.target.value })
                     }
+                    placeholder="0"
                     className="w-full rounded border border-gray-300 px-2 py-1 text-sm text-right"
                   />
                 </td>
-                <td className="px-4 py-2 text-center">
+                <td className="border-b border-r border-gray-200 px-4 py-2 text-center">
                   <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700">
                     Activo
                   </span>
                 </td>
-                <td className="px-4 py-2 text-center">
+                <td className="border-b border-gray-200 px-4 py-2 text-center">
                   <div className="flex items-center justify-center gap-2">
                     <button
                       onClick={handleSave}
@@ -398,10 +429,10 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
               </tr>
             )}
 
-            {products.map((p) =>
+            {products.map((p, idx) =>
               editingRow === p.id ? (
                 <tr key={p.id} className="bg-blue-50">
-                  <td className="px-4 py-2">
+                  <td className="border-b border-r border-gray-200 px-4 py-2">
                     <input
                       type="text"
                       value={form.name}
@@ -412,7 +443,7 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
                       autoFocus
                     />
                   </td>
-                  <td className="px-4 py-2">
+                  <td className="border-b border-r border-gray-200 px-4 py-2">
                     <input
                       type="text"
                       value={form.description}
@@ -423,27 +454,29 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
                       className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
                     />
                   </td>
-                  <td className="px-4 py-2">
+                  <td className="border-b border-r border-gray-200 px-4 py-2">
                     <input
                       type="number"
                       value={form.price}
                       onChange={(e) =>
-                        setForm({ ...form, price: Number(e.target.value) })
+                        setForm({ ...form, price: e.target.value })
                       }
+                      placeholder="0"
                       className="w-full rounded border border-gray-300 px-2 py-1 text-sm text-right"
                     />
                   </td>
-                  <td className="px-4 py-2">
+                  <td className="border-b border-r border-gray-200 px-4 py-2">
                     <input
                       type="number"
                       value={form.stock}
                       onChange={(e) =>
-                        setForm({ ...form, stock: Number(e.target.value) })
+                        setForm({ ...form, stock: e.target.value })
                       }
+                      placeholder="0"
                       className="w-full rounded border border-gray-300 px-2 py-1 text-sm text-right"
                     />
                   </td>
-                  <td className="px-4 py-2 text-center">
+                  <td className="border-b border-r border-gray-200 px-4 py-2 text-center">
                     <span
                       className={`rounded-full px-2 py-0.5 text-xs ${
                         p.active
@@ -454,7 +487,7 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
                       {p.active ? "Activo" : "Inactivo"}
                     </span>
                   </td>
-                  <td className="px-4 py-2 text-center">
+                  <td className="border-b border-gray-200 px-4 py-2 text-center">
                     <div className="flex items-center justify-center gap-2">
                       <button
                         onClick={handleSave}
@@ -474,27 +507,39 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
               ) : (
                 <tr
                   key={p.id}
-                  className={`hover:bg-gray-50 ${!p.active ? "opacity-50" : ""}`}
+                  className={`group transition-colors ${
+                    !p.active ? "opacity-60" : ""
+                  } hover:bg-gray-100`}
                 >
-                  <td className="px-4 py-2 font-medium text-slate-900">
+                  <td className="border-b border-r border-gray-200 px-4 py-2.5 font-medium text-slate-900">
                     {p.name}
                   </td>
                   <td
-                    className="px-4 py-2 text-gray-600 max-w-xs truncate"
+                    className="border-b border-r border-gray-200 px-4 py-2.5 text-gray-600 max-w-xs truncate"
                     title={p.description ?? undefined}
                   >
                     {p.description || "—"}
                   </td>
-                  <td className="px-4 py-2 text-right text-gray-700">
+                  <td className="border-b border-r border-gray-200 px-4 py-2.5 text-right font-medium text-gray-700">
                     {formatPrice(p.price)}
                   </td>
-                  <td className="px-4 py-2 text-right text-gray-700">
-                    {p.stock}
+                  <td className="border-b border-r border-gray-200 px-4 py-2.5 text-center">
+                    <span
+                      className={`inline-flex min-w-[2.5rem] justify-center rounded-md px-2.5 py-1 text-sm font-bold ${
+                        p.stock === 0
+                          ? "bg-red-100 text-red-700"
+                          : p.stock <= 3
+                            ? "bg-amber-100 text-amber-700"
+                            : "bg-emerald-50 text-emerald-700"
+                      }`}
+                    >
+                      {p.stock}
+                    </span>
                   </td>
-                  <td className="px-4 py-2 text-center">
+                  <td className="border-b border-r border-gray-200 px-4 py-2.5 text-center">
                     <button
                       onClick={() => handleToggle(p.id, p.active)}
-                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                      className={`rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors ${
                         p.active
                           ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
                           : "bg-gray-100 text-gray-600 hover:bg-gray-200"
@@ -512,17 +557,17 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
                           : "Inactivo"}
                     </button>
                   </td>
-                  <td className="px-4 py-2 text-center">
+                  <td className="border-b border-gray-200 px-4 py-2.5 text-center">
                     <div className="flex items-center justify-center gap-2">
                       <button
                         onClick={() => handleEdit(p)}
-                        className="rounded bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100"
+                        className="rounded bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100"
                       >
                         Editar
                       </button>
                       <button
                         onClick={() => openDeleteModal(p.id, p.name)}
-                        className="rounded bg-red-50 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-100"
+                        className="rounded bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-100"
                       >
                         Eliminar
                       </button>
@@ -536,7 +581,7 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
               <tr>
                 <td
                   colSpan={6}
-                  className="px-4 py-8 text-center text-sm text-gray-500"
+                  className="border-b border-gray-200 px-4 py-8 text-center text-sm text-gray-500"
                 >
                   No hay productos. Agregá uno con el botón de arriba.
                 </td>
@@ -560,7 +605,8 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
               ¿Eliminar producto?
             </h3>
             <p className="mb-6 text-sm text-gray-600">
-              Estás por eliminar <strong>{deleteConfirm.name}</strong>. Esta acción no se puede deshacer.
+              Estás por eliminar <strong>{deleteConfirm.name}</strong>. Esta
+              acción no se puede deshacer.
             </p>
             <div className="flex justify-end gap-3">
               <button

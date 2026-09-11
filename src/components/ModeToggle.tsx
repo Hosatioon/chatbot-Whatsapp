@@ -46,7 +46,9 @@ export default function ModeToggle({ conversationId, mode, onChange }: Props) {
         }`}
       />
       {isAi ? "Modo IA" : "Modo Humano"}
-      <span className="text-xs text-gray-500">(click para cambiar)</span>
+      <span className="hidden text-xs text-gray-500 sm:inline">
+        (click para cambiar)
+      </span>
     </button>
   );
 }

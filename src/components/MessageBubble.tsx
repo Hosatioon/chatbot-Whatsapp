@@ -29,7 +29,7 @@ export default function MessageBubble({ role, content, createdAt }: Props) {
   const label = isUser ? "Cliente" : isHuman ? "Humano" : "IA";
 
   return (
-    <div className={`flex ${wrapper}`}>
+    <div className={`flex animate-scale-in ${wrapper}`}>
       <div className={`max-w-[75%] rounded-2xl px-3 py-2 shadow-sm ${bubble}`}>
         <div className="mb-0.5 text-[10px] uppercase tracking-wider text-gray-500">
           {label}

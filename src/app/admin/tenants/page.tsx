@@ -26,7 +26,7 @@ export default function TenantsAdminPage() {
   const [adminName, setAdminName] = useState("");
   const [adminEmail, setAdminEmail] = useState("");
   const [adminPassword, setAdminPassword] = useState("");
-  const [createAdmin, setCreateAdmin] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -52,12 +52,13 @@ export default function TenantsAdminPage() {
     setError(null);
     setLoading(true);
     const autoSlug = slugify(name) || slugify(slug);
-    const body: Record<string, unknown> = { name, slug: autoSlug };
-    if (createAdmin) {
-      body.adminName = adminName;
-      body.adminEmail = adminEmail;
-      body.adminPassword = adminPassword;
-    }
+    const body = {
+      name,
+      slug: autoSlug,
+      adminName,
+      adminEmail,
+      adminPassword,
+    };
     const res = await fetch("/api/tenants", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -74,16 +75,28 @@ export default function TenantsAdminPage() {
     setAdminName("");
     setAdminEmail("");
     setAdminPassword("");
-    setCreateAdmin(false);
+    setShowPassword(false);
     load();
+  }
+
+  function generatePassword() {
+    const chars =
+      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
+    const length = 16;
+    let pass = "";
+    for (let i = 0; i < length; i++) {
+      pass += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setAdminPassword(pass);
+    setShowPassword(true);
   }
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 p-8">
-      <div className="max-w-3xl mx-auto">
+      <div className="max-w-3xl mx-auto animate-fade-in">
         <a
           href="/"
-          className="text-emerald-400 text-sm hover:underline mb-4 inline-block"
+          className="text-emerald-400 text-sm transition-colors hover:text-emerald-300 hover:underline mb-4 inline-block"
         >
           ← Volver al dashboard
         </a>
@@ -91,7 +104,7 @@ export default function TenantsAdminPage() {
 
         <form
           onSubmit={handleCreate}
-          className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 mb-8 grid sm:grid-cols-3 gap-3 items-end"
+          className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 mb-8 grid sm:grid-cols-3 gap-3"
         >
           <div>
             <label className="block text-xs text-zinc-400 mb-1">
@@ -104,7 +117,7 @@ export default function TenantsAdminPage() {
                 setName(e.target.value);
                 setSlug(slugify(e.target.value));
               }}
-              className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-sm"
+              className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-sm outline-none transition-colors focus:border-emerald-500"
               placeholder="Cookliz"
             />
             {slug && (
@@ -114,74 +127,83 @@ export default function TenantsAdminPage() {
               </p>
             )}
           </div>
+          <div>
+            <label className="block text-xs text-zinc-400 mb-1">
+              Nombre del administrador
+            </label>
+            <input
+              required
+              value={adminName}
+              onChange={(e) => setAdminName(e.target.value)}
+              className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-sm outline-none transition-colors focus:border-emerald-500"
+              placeholder="Juan Pérez"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-zinc-400 mb-1">
+              Email del administrador
+            </label>
+            <input
+              type="email"
+              required
+              value={adminEmail}
+              onChange={(e) => setAdminEmail(e.target.value)}
+              className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-sm outline-none transition-colors focus:border-emerald-500"
+              placeholder="admin@negocio.com"
+            />
+          </div>
+          <div className="sm:col-span-2">
+            <label className="block text-xs text-zinc-400 mb-1">
+              Contraseña (mín. 6 caracteres)
+            </label>
+            <div className="flex gap-2">
+              <input
+                type={showPassword ? "text" : "password"}
+                required
+                minLength={6}
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+                className="flex-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-sm outline-none transition-colors focus:border-emerald-500"
+                placeholder="••••••"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((s) => !s)}
+                className="px-3 py-2 rounded bg-zinc-800 border border-zinc-700 text-zinc-400 transition-colors hover:text-zinc-200 text-xs"
+              >
+                {showPassword ? "Ocultar" : "Ver"}
+              </button>
+              <button
+                type="button"
+                onClick={generatePassword}
+                className="px-3 py-2 rounded bg-emerald-600 text-white text-xs font-medium transition-colors hover:bg-emerald-500"
+              >
+                Aleatoria
+              </button>
+            </div>
+            {adminPassword && (
+              <p className="text-xs text-zinc-500 mt-1">
+                {adminPassword.length} caracteres
+              </p>
+            )}
+          </div>
           <button
             type="submit"
             disabled={loading}
-            className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 px-4 py-2 rounded font-medium text-sm sm:col-span-3"
+            className="inline-flex items-center justify-center gap-2 bg-emerald-600 disabled:opacity-50 px-4 py-2 rounded font-medium text-sm h-fit self-end transition-colors hover:bg-emerald-500"
           >
+            {loading && (
+              <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+              </svg>
+            )}
             {loading ? "Creando..." : "Crear tenant"}
           </button>
-
-          <div className="flex items-center gap-2 sm:col-span-3">
-            <input
-              type="checkbox"
-              id="createAdmin"
-              checked={createAdmin}
-              onChange={(e) => setCreateAdmin(e.target.checked)}
-              className="h-4 w-4 rounded border-zinc-600 bg-zinc-800 text-emerald-600"
-            />
-            <label htmlFor="createAdmin" className="text-sm text-zinc-300">
-              Crear usuario administrador para este tenant
-            </label>
-          </div>
-
-          {createAdmin && (
-            <>
-              <div>
-                <label className="block text-xs text-zinc-400 mb-1">
-                  Nombre del admin
-                </label>
-                <input
-                  required={createAdmin}
-                  value={adminName}
-                  onChange={(e) => setAdminName(e.target.value)}
-                  className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-sm"
-                  placeholder="Juan Pérez"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-zinc-400 mb-1">
-                  Email del admin
-                </label>
-                <input
-                  type="email"
-                  required={createAdmin}
-                  value={adminEmail}
-                  onChange={(e) => setAdminEmail(e.target.value)}
-                  className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-sm"
-                  placeholder="admin@negocio.com"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-zinc-400 mb-1">
-                  Contraseña (min 6)
-                </label>
-                <input
-                  type="password"
-                  required={createAdmin}
-                  minLength={6}
-                  value={adminPassword}
-                  onChange={(e) => setAdminPassword(e.target.value)}
-                  className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-sm"
-                  placeholder="••••••"
-                />
-              </div>
-            </>
-          )}
         </form>
 
         {error && (
-          <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-4">
+          <div className="animate-slide-down text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-4">
             {error}
           </div>
         )}
@@ -198,7 +220,10 @@ export default function TenantsAdminPage() {
             </thead>
             <tbody>
               {tenants.map((t) => (
-                <tr key={t.id} className="border-t border-zinc-800">
+                <tr
+                  key={t.id}
+                  className="border-t border-zinc-800 transition-colors hover:bg-zinc-800/50"
+                >
                   <td className="px-4 py-2 font-mono">{t.id}</td>
                   <td className="px-4 py-2">{t.name}</td>
                   <td className="px-4 py-2 font-mono text-zinc-400">

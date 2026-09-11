@@ -62,8 +62,8 @@ export default function SettingsDropdown({
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          title="Ajustes"
-          aria-label="Abrir ajustes"
+          title="Mi cuenta"
+          aria-label="Abrir mi cuenta"
           className="flex h-9 w-9 items-center justify-center rounded-lg border border-gray-300 bg-white text-gray-600 transition hover:bg-gray-50"
         >
           <svg
@@ -87,7 +87,10 @@ export default function SettingsDropdown({
         </button>
 
         {open && (
-          <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-xl border border-gray-200 bg-white p-4 shadow-lg">
+          <div className="animate-slide-down absolute right-0 top-full z-50 mt-2 w-72 max-w-[calc(100vw-1.5rem)] rounded-xl border border-gray-200 bg-white p-4 shadow-lg">
+            <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-400">
+              Mi cuenta
+            </div>
             {/* Usuario */}
             {session?.user && (
               <div className="mb-4 border-b border-gray-100 pb-3">

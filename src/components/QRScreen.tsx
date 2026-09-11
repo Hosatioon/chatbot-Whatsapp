@@ -53,8 +53,8 @@ export default function QRScreen({ status, qrPng }: Props) {
   const qrExpiresIn = Math.max(0, 60 - qrAge);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 to-slate-200 p-6">
-      <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-8 shadow-sm">
+    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 via-gray-50 to-emerald-50/30 p-4 sm:p-6">
+      <div className="animate-slide-up w-full max-w-md rounded-2xl border border-gray-200 bg-white p-5 shadow-xl sm:p-8">
         <h1 className="text-center text-xl font-semibold text-slate-900">
           Conectar número de WhatsApp
         </h1>
@@ -65,13 +65,13 @@ export default function QRScreen({ status, qrPng }: Props) {
           </span>
         </p>
 
-        <div className="mt-6 flex h-80 items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50">
+        <div className="mt-6 flex aspect-square w-full items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50">
           {qrPng ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={qrPng}
               alt="QR de WhatsApp"
-              className="h-72 w-72 rounded-lg"
+              className="animate-scale-in h-[85%] w-[85%] rounded-lg"
             />
           ) : status === "connecting" ? (
             <div className="flex flex-col items-center gap-3">
