@@ -124,7 +124,16 @@ export async function createOrder(
 }
 
 // Wrapper para actualizar estado con emisión de eventos
-import { updateOrderStatus as baseUpdateOrderStatus, getOrderById } from "./db";
+import {
+  updateOrderStatus as baseUpdateOrderStatus,
+  getOrderById,
+  getTenantById,
+  getOrCreateConversation,
+  enqueueOutbox,
+} from "./db";
+
+const DEFAULT_FEEDBACK_MESSAGE =
+  "¡Tu pedido ya fue entregado! 🎉\n\nCuéntanos, ¿qué te pareció? Tu opinión nos ayuda a mejorar 😊";
 
 export async function updateOrderStatus(
   tenantId: number,
@@ -169,6 +178,36 @@ export async function updateOrderStatus(
   const event = eventMap[newStatus];
   if (event) {
     emitOrderEvent(event, updatedOrder, previousStatus);
+  }
+
+  // Enviar mensaje automático de retroalimentación cuando se entrega
+  if (newStatus === "DELIVERED") {
+    try {
+      const tenant = getTenantById(tenantId);
+      const feedbackMsg =
+        tenant?.feedback_message?.trim() || DEFAULT_FEEDBACK_MESSAGE;
+      const convo = getOrCreateConversation(
+        tenantId,
+        updatedOrder.customer_phone,
+        updatedOrder.customer_name ?? null,
+        null,
+      );
+      enqueueOutbox(
+        tenantId,
+        convo.id,
+        updatedOrder.customer_phone,
+        feedbackMsg,
+        convo.jid,
+      );
+      console.log(
+        `[events] Mensaje de retroalimentación enqueued para pedido #${updatedOrder.id} → ${updatedOrder.customer_phone}`,
+      );
+    } catch (err) {
+      console.error(
+        `[events] Error encolando mensaje de retroalimentación para pedido #${updatedOrder.id}:`,
+        err,
+      );
+    }
   }
 
   return updatedOrder;

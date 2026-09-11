@@ -31,39 +31,52 @@ const CONFIRM_WORDS = [
 const CANCEL_WORDS = [
   "cancelar",
   "cancelo",
-  "no",
-  "nop",
-  "nope",
+  "cancela",
+  "cancelen",
   "mejor no",
   "olvidalo",
   "olvídalo",
-  "nada",
+  "olvídelo",
   "dejar",
-  "cancela",
+  "déjalo",
+  "dejalo",
+  "no quiero nada",
+  "cancelen el pedido",
+  "cancelar pedido",
 ];
 
 const PAYMENT_KEYWORDS: Record<string, string[]> = {
   transferencia: [
     "transferencia",
+    "transaferencia",
+    "trasferencia",
     "transferir",
     "transf",
+    "transa",
+    "trasf",
     "nequi",
     "daviplata",
     "bancolombia",
     "cuenta",
     "deposito",
     "pse",
+    "transfer",
+    "banco",
   ],
-  efectivo: ["efectivo", "cash", "plata", "contraentrega", "contra entrega"],
+  efectivo: [
+    "efectivo",
+    "cash",
+    "plata",
+    "contraentrega",
+    "contra entrega",
+    "efectiv",
+  ],
 };
 
 const ADDRESS_KEYWORDS = [
   "calle",
   "carrera",
-  "cra",
-  "av",
   "avenida",
-  "cll",
   "diagonal",
   "transversal",
   "barrio",
@@ -79,17 +92,56 @@ const ADDRESS_KEYWORDS = [
   "no.",
   "edificio",
   "sector",
-  "via",
-  "vía",
   "km",
   "vereda",
   "finca",
   "lote",
 ];
 
+const ADDRESS_KEYWORDS_SHORT = ["av", "cra", "cll", "via", "vía"];
+
+const CONFIRM_FIRST_WORDS = new Set([
+  "si",
+  "sii",
+  "sip",
+  "sisas",
+  "dale",
+  "ok",
+  "okay",
+  "okey",
+  "bueno",
+  "va",
+  "claro",
+  "porfa",
+  "confirmo",
+  "confirmar",
+  "confirmado",
+  "confirmada",
+  "perfecto",
+  "adelante",
+  "hagale",
+  "hazlo",
+  "hagalo",
+  "listo",
+  "yes",
+  "seguro",
+]);
+
 export function isConfirmation(text: string): boolean {
-  const t = text.toLowerCase().trim();
-  return CONFIRM_WORDS.some((w) => t === w || t.startsWith(w + " "));
+  // Normaliza: minúsculas, sin tildes, sin signos de puntuación
+  const t = normalizeText(text)
+    .replace(/[.,!¡¿?;:]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t) return false;
+  // "no" como palabra invalida la confirmación ("sí pero no", "seguro que no")
+  if (/(^|\s)no(\s|$)/.test(t)) return false;
+  const first = t.split(" ")[0];
+  if (CONFIRM_FIRST_WORDS.has(first)) return true;
+  return CONFIRM_WORDS.some((w) => {
+    const n = normalizeText(w);
+    return t === n || t.startsWith(n + " ");
+  });
 }
 
 export function isCancellation(text: string): boolean {
@@ -140,11 +192,17 @@ export function detectPaymentMethod(text: string): string | null {
 
 export function looksLikeAddress(text: string): boolean {
   const t = text.toLowerCase();
-  // Must have at least one address keyword AND some number
-  const hasKeyword = ADDRESS_KEYWORDS.some((kw) => t.includes(kw));
   const hasNumber = /\d/.test(t);
-  return hasKeyword && hasNumber;
+  if (!hasNumber) return false;
+  const hasKeyword = ADDRESS_KEYWORDS.some((kw) => t.includes(kw));
+  if (hasKeyword) return true;
+  const hasShortKeyword = ADDRESS_KEYWORDS_SHORT.some((kw) =>
+    new RegExp(`\\b${kw}\\b`).test(t),
+  );
+  return hasShortKeyword;
 }
+
+export { searchProducts };
 
 export function addToDraft(
   state: ConversationState,
@@ -175,16 +233,23 @@ export function computeStateFromDraft(
   const hasAddress = !!state.draft_address;
   const hasPayment = !!state.draft_payment;
 
-  // Only advance from SELECTING_PRODUCTS if the client already provided
-  // delivery method, address or payment (meaning they moved forward on their own).
-  // Otherwise stay in SELECTING_PRODUCTS so the LLM can ask "¿algo más?"
-  if (state.state === "SELECTING_PRODUCTS") {
-    if (hasDeliveryMethod || hasAddress || hasPayment) {
-      // Client jumped ahead — recompute full state
+  // Si estamos en SELECTING_PRODUCTS y hay items, permitir avanzar
+  // cuando se hayan agregado datos de entrega/pago/dirección.
+  // El cliente sale de selección de productos cuando dice "nada más" etc,
+  // pero los tools pueden haber agregado datos de entrega que deben reflejarse.
+  if (state.state === "SELECTING_PRODUCTS" && hasItems) {
+    // Si hay método de entrega o pago, el cliente ya avanzó — recalcular
+    if (hasDeliveryMethod || hasPayment) {
+      // caer al flujo normal de abajo
     } else {
-      // Otherwise stay in SELECTING_PRODUCTS
       return state;
     }
+  }
+
+  // Si hay dirección pero no hay método de entrega, inferir domicilio
+  if (hasAddress && !hasDeliveryMethod) {
+    state.draft_delivery_method = "domicilio";
+    return computeStateFromDraft(state);
   }
 
   // Recompute based on what's missing
@@ -192,9 +257,16 @@ export function computeStateFromDraft(
     state.state = "SELECTING_PRODUCTS";
   } else if (!hasDeliveryMethod) {
     state.state = "ASKING_DELIVERY_METHOD";
-  } else if (state.draft_delivery_method === "domicilio" && !hasAddress) {
-    state.state = "ASKING_ADDRESS";
+  } else if (state.draft_delivery_method === "domicilio") {
+    if (!hasAddress) {
+      state.state = "ASKING_ADDRESS";
+    } else if (!hasPayment) {
+      state.state = "ASKING_PAYMENT";
+    } else {
+      state.state = "WAITING_CONFIRMATION";
+    }
   } else if (!hasPayment) {
+    // recoger: skip zone and address
     state.state = "ASKING_PAYMENT";
   } else {
     state.state = "WAITING_CONFIRMATION";
@@ -257,6 +329,7 @@ export function isDoneSelecting(text: string): boolean {
   // Short words must match exactly or with "gracias" suffix only
   const exactWords = [
     "ya",
+    "no",
     "nada",
     "listo",
     "es todo",
@@ -282,7 +355,24 @@ export function getStateForConversation(
   conversationId: number,
   tenantId: number,
 ): ConversationState {
-  return getConversationState(conversationId, tenantId);
+  const state = getConversationState(conversationId, tenantId);
+  // Expirar drafts abandonados: si el estado tiene datos de pedido y no se
+  // ha tocado en DRAFT_TTL_MINUTES, resetear para no contaminar conversaciones nuevas
+  const ttlMinutes = parseInt(process.env.DRAFT_TTL_MINUTES || "60", 10) || 60;
+  const now = Math.floor(Date.now() / 1000);
+  const hasDraftData =
+    state.draft_items.length > 0 ||
+    state.draft_payment ||
+    state.draft_delivery_method ||
+    state.draft_address;
+  if (hasDraftData && now - state.updated_at > ttlMinutes * 60) {
+    console.log(
+      `[state] Draft de conversación ${conversationId} expirado (${ttlMinutes}min), reseteando`,
+    );
+    clearConversationState(conversationId);
+    return getConversationState(conversationId, tenantId);
+  }
+  return state;
 }
 
 export function saveState(state: ConversationState): void {
@@ -293,46 +383,162 @@ export function resetState(conversationId: number): void {
   clearConversationState(conversationId);
 }
 
+const WORD_NUMBERS: Record<string, number> = {
+  un: 1,
+  uno: 1,
+  una: 1,
+  dos: 2,
+  tres: 3,
+  cuatro: 4,
+  cinco: 5,
+  seis: 6,
+  siete: 7,
+  ocho: 8,
+  nueve: 9,
+  diez: 10,
+  once: 11,
+  doce: 12,
+  trece: 13,
+  catorce: 14,
+  quince: 15,
+  veinte: 20,
+  treinta: 30,
+  cuarenta: 40,
+  cincuenta: 50,
+};
+
+const LEADING_VERBS =
+  /^(?:quiero|dame|ponme|me das|me pones|necesito|ponga|anoteme|anote|agregueme|agregue|me regalas|regaleme|envieme|mande|busqueme|traeme|llevar|llévame|comprar|vamos a|vamo a|deseo|solicito|pido|pedir)\s+/i;
+
+function cleanProductName(raw: string): string {
+  let s = raw.trim();
+  // Quitar "de " inicial sobrante ("de maracuya" → "maracuya")
+  s = s.replace(/^de\s+/i, "");
+  // Quitar conectores finales sueltos ("y", "también", "gracias", "por favor")
+  s = s.replace(/\s+(?:y|también|gracias|por favor|porfa|pls|please)$/i, "");
+  // Quitar "galleta(s) de" → dejar el sabor ("galletas de maracuya" → "maracuya")
+  // solo si queda muy corto sin eso, sino dejar completo
+  return s.trim();
+}
+
 export function tryAddProductsFromText(
   state: ConversationState,
   text: string,
 ): { added: boolean; products: { name: string; quantity: number }[] } {
-  const t = text.toLowerCase().trim();
+  let t = text.toLowerCase().trim();
+  // Quitar verbos iniciales
+  t = t.replace(LEADING_VERBS, "");
 
-  // Split by separators: "y", ",", "también", "y también", ";"
-  const parts = t
-    .split(/\s+y\s+|\s*,\s*|\s+también\s+|\s+y también\s+|\s*;\s*/i)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  // Tokenizar: encontrar todas las posiciones de cantidades
+  // (dígitos o palabras-número) y dividir el texto en segmentos
+  // cada uno con [cantidad, nombre_del_producto]
+  const qtyRegex =
+    /(\d+|un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|veinte|treinta|cuarenta|cincuenta)\b/gi;
 
-  // Patterns: "quiero 2 vasca", "dame 1 croissant", "3 galletas de nutella"
-  const patterns = [
-    /(?:quiero|dame|ponme|me das|me pones|necesito|poné|anotame|anotá|agregame|agregá)\s+(\d+)\s+(?:de\s+)?(.+)/i,
-    /(\d+)\s+(?:de\s+)?(.+)/i,
-  ];
+  interface Segment {
+    quantity: number;
+    name: string;
+  }
+
+  const segments: Segment[] = [];
+  const matches: { index: number; quantity: number; length: number }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = qtyRegex.exec(t)) !== null) {
+    const word = m[1].toLowerCase();
+    const qty = /^\d+$/.test(word)
+      ? parseInt(word, 10)
+      : (WORD_NUMBERS[word] ?? 0);
+    if (qty > 0 && qty < 1000) {
+      matches.push({ index: m.index, quantity: qty, length: m[0].length });
+    }
+  }
+
+  if (matches.length === 0) return { added: false, products: [] };
+
+  for (let i = 0; i < matches.length; i++) {
+    const nameStart = matches[i].index + matches[i].length;
+    const nameEnd = i + 1 < matches.length ? matches[i + 1].index : t.length;
+    let rawName = t.slice(nameStart, nameEnd).trim();
+    // Quitar separadores "y", ",", "también" al final del segmento
+    rawName = rawName.replace(/[\s,;]+(?:y|también|tambien)\s*$/i, "");
+    rawName = rawName.replace(/[,;]+$/g, "").trim();
+    if (rawName.length < 2) continue;
+    segments.push({
+      quantity: matches[i].quantity,
+      name: cleanProductName(rawName),
+    });
+  }
 
   const products: { name: string; quantity: number }[] = [];
 
-  for (const part of parts) {
-    for (const pattern of patterns) {
-      const match = part.match(pattern);
-      if (match) {
-        const quantity = parseInt(match[1], 10);
-        const productName = match[2].trim();
-        if (quantity > 0 && quantity < 1000 && productName.length > 2) {
-          const results = searchProducts(state.tenant_id, productName, 1);
-          if (results.length > 0) {
-            const product = results[0];
-            addToDraft(state, product.name, quantity, product.price);
-            products.push({ name: product.name, quantity });
-          }
-          break; // Only use first matching pattern per part
-        }
-      }
+  for (const seg of segments) {
+    if (seg.name.length < 2) continue;
+    const results = searchProducts(state.tenant_id, seg.name, 1);
+    if (results.length > 0) {
+      const product = results[0];
+      addToDraft(state, product.name, seg.quantity, product.price);
+      products.push({ name: product.name, quantity: seg.quantity });
     }
   }
 
   return { added: products.length > 0, products };
+}
+
+const ACCEPTANCE_PATTERN =
+  /^(sí|si|dale|ok|okay|okey|bueno|va|de una|claro|porfa|por favor|hagale|hágale)\b/i;
+
+const EXPLICIT_CLOSING = [
+  "eso es todo",
+  "nada mas",
+  "nada más",
+  "es todo",
+  "solo eso",
+  "eso seria todo",
+  "eso sería todo",
+  "eso seria",
+  "eso sería",
+  "no gracias",
+  "ya estoy",
+  "ya termine",
+  "ya terminé",
+];
+
+export function isMereAcceptance(text: string): boolean {
+  const t = text.toLowerCase().trim();
+  return (
+    ACCEPTANCE_PATTERN.test(t) && !EXPLICIT_CLOSING.some((c) => t.includes(c))
+  );
+}
+
+function normalizeText(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+// Cuando el cliente acepta una oferta del bot ("sí por favor", "dale") sin
+// nombrar el producto, lo buscamos en el último mensaje del assistant.
+export function tryAddProductFromLastOffer(
+  state: ConversationState,
+  userText: string,
+  lastAssistantText: string | null,
+): { added: boolean; product?: string } {
+  if (!lastAssistantText) return { added: false };
+  if (!ACCEPTANCE_PATTERN.test(userText.trim())) return { added: false };
+
+  const normOffer = normalizeText(lastAssistantText);
+  const allProducts = searchProducts(state.tenant_id, "", 500);
+  const match = allProducts
+    .filter((p) => p.name.length > 2)
+    .sort((a, b) => b.name.length - a.name.length)
+    .find((p) => normOffer.includes(normalizeText(p.name)));
+  if (!match) return { added: false };
+
+  const numMatch = userText.match(/(\d+)/);
+  const quantity = numMatch ? Math.min(parseInt(numMatch[1], 10), 99) : 1;
+  addToDraft(state, match.name, quantity > 0 ? quantity : 1, match.price);
+  return { added: true, product: match.name };
 }
 
 export function formatDraftForPrompt(state: ConversationState): string {

@@ -6,6 +6,7 @@ import {
   getRecentHistory,
   insertMessage,
   markOutboxSent,
+  enqueueOutbox,
   purgeOldMessageEvents,
   hasExceededDailyLimit,
   incrementDailyUsage,
@@ -15,24 +16,25 @@ import {
   getTenantLinks,
   parseBusinessHours,
   isWithinBusinessHours,
+  isMessageProcessed,
+  markMessageProcessed,
+  purgeOldProcessedMessages,
+  findConversationByRealPhone,
+  searchProducts,
 } from "../db";
 import { generateReply, type LLMResponse } from "../openrouter";
-import { createOrder } from "../events";
+import { sendTextWithSafePreview } from "./send";
 import { checkAndRecord } from "../rate-limit";
+import { debounceMessage, hasPendingDebounce } from "../debounce";
+import { acquireLLMSlot } from "../llm-concurrency";
 import {
   getStateForConversation,
-  saveState,
   resetState,
-  computeStateFromDraft,
-  tryAddProductsFromText,
-  detectDeliveryMethod,
-  detectPaymentMethod,
-  looksLikeAddress,
-  isConfirmation,
   isCancellation,
-  isDoneSelecting,
   computeDraftTotal,
-  type ConversationState,
+  tryAddProductsFromText,
+  saveState,
+  computeStateFromDraft,
 } from "../conversation-state";
 
 // Limpieza periódica del registro de eventos para rate limiting
@@ -43,10 +45,26 @@ function maybePurge() {
     lastPurge = now;
     try {
       purgeOldMessageEvents(7200);
+      purgeOldProcessedMessages(86400);
     } catch (e) {
       console.error("[bot] purgeOldMessageEvents error:", e);
     }
   }
+}
+
+// Dedup de mensajes re-entregados por WhatsApp (mismo msg.key.id)
+const processedMsgIds = new Map<string, number>();
+function isDuplicateMessage(id: string | null | undefined): boolean {
+  if (!id) return false;
+  if (processedMsgIds.has(id)) return true;
+  const now = Date.now();
+  processedMsgIds.set(id, now);
+  if (processedMsgIds.size > 2000) {
+    for (const [k, ts] of processedMsgIds) {
+      if (now - ts > 10 * 60 * 1000) processedMsgIds.delete(k);
+    }
+  }
+  return false;
 }
 
 // Delay aleatorio humanizado: nunca enviar dos mensajes en el mismo segundo
@@ -90,6 +108,23 @@ function extractText(msg: WAMessage): string | null {
   }
   const ext = m.extendedTextMessage?.text;
   if (typeof ext === "string" && ext.length > 0) return ext;
+  // Capturar ubicación GPS de WhatsApp
+  const loc = m.locationMessage;
+  if (loc) {
+    const lat = loc.degreesLatitude;
+    const lng = loc.degreesLongitude;
+    if (lat != null && lng != null) {
+      return `Ubicación GPS: https://maps.google.com/?q=${lat},${lng}`;
+    }
+  }
+  const liveLoc = m.liveLocationMessage;
+  if (liveLoc) {
+    const lat = liveLoc.degreesLatitude;
+    const lng = liveLoc.degreesLongitude;
+    if (lat != null && lng != null) {
+      return `Ubicación GPS: https://maps.google.com/?q=${lat},${lng}`;
+    }
+  }
   return null;
 }
 
@@ -144,8 +179,44 @@ async function handleSingleMessage(
     return;
   }
 
+  // Dedup: memoria (rápido) + SQLite (sobrevive reinicios del proceso, evita
+  // que un mensaje re-entregado por WhatsApp tras un reinicio se procese 2 veces)
+  if (
+    msg.key.id &&
+    (isDuplicateMessage(msg.key.id) || isMessageProcessed(msg.key.id))
+  ) {
+    console.log(`[bot] duplicado msg.id=${msg.key.id}, ignorado`);
+    return;
+  }
+  if (msg.key.id) {
+    markMessageProcessed(msg.key.id);
+  }
+
   const phone = jidToPhone(remoteJid);
   const pushName = msg.pushName ?? null;
+  let realPhone: string | null = null;
+
+  // Si el JID es un LID, intentar resolver el número real vía lidMapping
+  if (remoteJid.endsWith("@lid")) {
+    try {
+      const lid = remoteJid;
+      const repo = (sock as unknown as Record<string, unknown>)
+        .signalRepository as
+        | {
+            lidMapping?: {
+              getPNForLID?: (l: string) => Promise<string | null>;
+            };
+          }
+        | undefined;
+      const pn = await repo?.lidMapping?.getPNForLID?.(lid);
+      if (pn) {
+        realPhone = jidToPhone(pn);
+        console.log(`[bot:${tenantId}] LID ${phone} resuelto a ${realPhone}`);
+      }
+    } catch (e) {
+      console.warn(`[bot:${tenantId}] No se pudo resolver LID→PN:`, e);
+    }
+  }
 
   // Rate limiting / detección de spam
   maybePurge();
@@ -160,7 +231,13 @@ async function handleSingleMessage(
   // Guardamos el JID completo (puede ser @s.whatsapp.net o @lid). Es lo
   // único que nos permite responder a contactos con Linked ID, donde el
   // "phone" guardado no se puede convertir a un JID público válido.
-  const convo = getOrCreateConversation(tenantId, phone, pushName, remoteJid);
+  const convo = getOrCreateConversation(
+    tenantId,
+    phone,
+    pushName,
+    remoteJid,
+    realPhone,
+  );
 
   // Verificar límite diario de chats por plan
   const today = new Date().toISOString().slice(0, 10);
@@ -174,7 +251,7 @@ async function handleSingleMessage(
       const limitMsg =
         "Hoy hemos atendido el límite de chats de tu plan 😔\n\nTu plan se renueva mañana. Si necesitás más, contactá a tu administrador para actualizar.";
       try {
-        await sock.sendMessage(remoteJid, { text: limitMsg });
+        await sendTextWithSafePreview(sock, remoteJid, limitMsg);
       } catch (e) {
         console.error("[bot] Error enviando mensaje de límite:", e);
       }
@@ -198,8 +275,24 @@ async function handleSingleMessage(
     return;
   }
 
-  // === Check de horario de atención (programático, sin IA) ===
+  // === Check de bot pausado (programático, sin IA, prioridad sobre horarios) ===
   const tenant = getTenantById(tenantId);
+  if (tenant?.bot_paused) {
+    const pausedMsg =
+      tenant.paused_message ||
+      "En este momento no estamos recibiendo pedidos. ¡Gracias por tu paciencia, pronto volvemos!";
+    insertMessage(convo.id, "assistant", pausedMsg);
+    await humanDelay(1000, 3000);
+    try {
+      await sendTextWithSafePreview(sock, remoteJid, pausedMsg);
+      console.log(`[bot:${tenantId}] → Mensaje de pausa enviado a ${phone}`);
+    } catch (e) {
+      console.error(`[bot] Error enviando mensaje de pausa:`, e);
+    }
+    return;
+  }
+
+  // === Check de horario de atención (programático, sin IA) ===
   if (tenant) {
     const hours = parseBusinessHours(tenant.business_hours);
     if (hours && hours.enabled && !isWithinBusinessHours(hours)) {
@@ -209,7 +302,7 @@ async function handleSingleMessage(
       insertMessage(convo.id, "assistant", oohMsg);
       await humanDelay(1000, 3000);
       try {
-        await sock.sendMessage(remoteJid, { text: oohMsg });
+        await sendTextWithSafePreview(sock, remoteJid, oohMsg);
         console.log(`[bot] → Mensaje fuera de horario enviado a ${phone}`);
       } catch (e) {
         console.error(`[bot] Error enviando mensaje fuera de horario:`, e);
@@ -218,7 +311,7 @@ async function handleSingleMessage(
     }
   }
 
-  // === Saludo personalizado en primera interacción (programático, sin IA) ===
+  // === Saludo en primera interacción (programático, sin IA) ===
   const historyLimit = Math.min(
     Math.max(parseInt(process.env.LLM_HISTORY_MESSAGES || "10", 10) || 10, 4),
     15,
@@ -226,31 +319,33 @@ async function handleSingleMessage(
   const history = getRecentHistory(convo.id, historyLimit);
   const isFirstMessage = history.length === 1;
 
+  // Si hay saludo personalizado, enviarlo y no llamar al LLM
   if (isFirstMessage && tenant?.custom_greeting) {
     const greeting = tenant.custom_greeting;
     insertMessage(convo.id, "assistant", greeting);
-    await humanDelay(1000, 3000);
     try {
-      await sock.sendMessage(remoteJid, { text: greeting });
+      await sendTextWithSafePreview(sock, remoteJid, greeting);
       console.log(`[bot] → Saludo personalizado enviado a ${phone}`);
     } catch (e) {
       console.error(`[bot] Error enviando saludo:`, e);
     }
 
-    // Enviar bloque de links después del saludo (delay humanizado)
+    // Enviar catálogo después del saludo
     const linksMsg = buildLinksMessage(tenantId);
     if (linksMsg) {
-      await humanDelay(800, 2000);
+      await humanDelay(500, 1500);
       insertMessage(convo.id, "assistant", linksMsg);
       try {
-        await sock.sendMessage(remoteJid, { text: linksMsg });
-        console.log(`[bot] → Links enviados a ${phone}`);
+        await sendTextWithSafePreview(sock, remoteJid, linksMsg);
+        console.log(`[bot] → Catálogo enviado a ${phone}`);
       } catch (e) {
-        console.error(`[bot] Error enviando links:`, e);
+        console.error(`[bot] Error enviando catálogo:`, e);
       }
     }
     return; // No llamar al LLM, ya respondimos programáticamente
   }
+  // Si no hay saludo personalizado, el LLM responde primero
+  // y el catálogo se envía después de la respuesta del LLM
 
   // Verificar presupuesto de IA antes de llamar al LLM
   const budget = getLLMBudgetStatus(tenantId);
@@ -260,204 +355,63 @@ async function handleSingleMessage(
       "En este momento te atenderá una persona del equipo. ¡Gracias por tu paciencia!";
     insertMessage(convo.id, "assistant", budgetMsg);
     try {
-      await sock.sendMessage(remoteJid, { text: budgetMsg });
+      await sendTextWithSafePreview(sock, remoteJid, budgetMsg);
     } catch (e) {
       console.error("[bot] Error enviando mensaje de presupuesto:", e);
     }
     return;
   }
 
-  // === Máquina de estados: procesar mensaje del cliente antes del LLM ===
+  // === Cargar estado de conversación ===
   const convState = getStateForConversation(convo.id, tenantId);
   console.log(
     `[bot:${tenantId}] Estado conversación: ${convState.state}, items=${convState.draft_items.length}, delivery=${convState.draft_delivery_method ?? "no"}, addr=${convState.draft_address ? "sí" : "no"}, pay=${convState.draft_payment ?? "no"}`,
   );
 
-  // Detectar cancelación
+  // Detectar cancelación explícita
   if (isCancellation(text)) {
     resetState(convo.id);
     convState.draft_items = [];
     convState.draft_delivery_method = null;
     convState.draft_address = null;
     convState.draft_payment = null;
+    convState.draft_delivery_price = null;
     convState.state = "SELECTING_PRODUCTS";
     console.log(`[bot:${tenantId}] Cliente canceló, estado reseteado`);
   }
 
-  // Procesar según el estado actual
-  if (convState.state === "SELECTING_PRODUCTS") {
-    // Intentar extraer productos del mensaje
-    const { added, products } = tryAddProductsFromText(convState, text);
-    if (added) {
-      console.log(
-        `[bot:${tenantId}] Productos agregados al draft: ${products.map((p) => `${p.quantity}x ${p.name}`).join(", ")}`,
-      );
-    }
-    // Si el cliente dice que no quiere nada más y ya tiene items, avanzar
-    if (isDoneSelecting(text) && convState.draft_items.length > 0) {
-      convState.state = "ASKING_DELIVERY_METHOD";
-      console.log(
-        `[bot:${tenantId}] Cliente terminó de seleccionar, pasando a ASKING_DELIVERY_METHOD`,
-      );
-    }
-  } else if (convState.state === "ASKING_DELIVERY_METHOD") {
-    const delivery = detectDeliveryMethod(text);
-    if (delivery) {
-      convState.draft_delivery_method = delivery;
-      console.log(
-        `[bot:${tenantId}] Método de entrega: ${convState.draft_delivery_method}`,
-      );
-      if (delivery === "recoger") {
-        // Skip address, go straight to payment
-        convState.state = "ASKING_PAYMENT";
-      } else {
-        convState.state = "ASKING_ADDRESS";
-      }
-    }
-  } else if (convState.state === "ASKING_ADDRESS") {
-    if (looksLikeAddress(text)) {
-      convState.draft_address = text.trim();
-      console.log(
-        `[bot:${tenantId}] Dirección guardada: ${convState.draft_address}`,
-      );
-    }
-  } else if (convState.state === "ASKING_PAYMENT") {
-    const payment = detectPaymentMethod(text);
-    if (payment) {
-      convState.draft_payment = payment;
-      console.log(
-        `[bot:${tenantId}] Pago guardado: ${convState.draft_payment}`,
-      );
-    }
-  } else if (convState.state === "WAITING_CONFIRMATION") {
-    if (isConfirmation(text)) {
-      // Crear pedido directamente desde el draft
-      convState.state = "CONFIRMED";
-      try {
-        const order = await createOrder({
-          tenant_id: tenantId,
-          customer_phone: phone,
-          customer_name: pushName,
-          items: convState.draft_items.map((item) => ({
-            product_name: item.name,
-            quantity: item.quantity,
-            unit_price: item.price,
-          })),
-          notes: `Entrega: ${convState.draft_address ?? "a convenir"}. Pago: ${convState.draft_payment ?? "a definir"}.`,
-        });
-        console.log(
-          `[bot:${tenantId}] Pedido #${order.id} creado desde estado`,
-        );
-
-        // Guardar estado confirmado
-        saveState(convState);
-
-        // Enviar confirmación con datos de pago según método
-        const total = computeDraftTotal(convState.draft_items);
-        const paymentInfo = tenant?.payment_info || "";
-        let confirmMsg: string;
-        if (convState.draft_payment === "efectivo") {
-          confirmMsg = `¡Pedido confirmado! 🎉\n\nTotal: $${total.toLocaleString("es-CO")}\n\nPago en efectivo. Tene listo el monto exacto para la entrega 😋\n\n¿Algo más en lo que te pueda ayudar?`;
-        } else {
-          confirmMsg = `¡Pedido confirmado! 🎉\n\nTotal: $${total.toLocaleString("es-CO")}\n\n${paymentInfo}\n\nMandame el comprobante cuando transfieras y te aviso cuando esté listo 😋`;
-        }
-
-        insertMessage(convo.id, "assistant", confirmMsg);
-        await humanDelay(1000, 3000);
-        try {
-          await sock.sendMessage(remoteJid, { text: confirmMsg });
-          console.log(`[bot] → Confirmación de pedido enviada a ${phone}`);
-        } catch (e) {
-          console.error(`[bot] Error enviando confirmación:`, e);
-        }
-
-        // Limpiar estado después de crear el pedido
-        resetState(convo.id);
-        return;
-      } catch (err) {
-        console.error(
-          `[bot:${tenantId}] Error creando pedido desde estado:`,
-          err,
-        );
-        // Si falla, dejar que el LLM maneje el error
-        convState.state = "WAITING_CONFIRMATION";
-      }
-    }
-  }
-
-  // Recalcular estado basado en draft
-  computeStateFromDraft(convState);
-  saveState(convState);
-  console.log(`[bot:${tenantId}] Estado actualizado: ${convState.state}`);
-
-  // === Si el estado avanzó, generar respuesta directamente sin LLM ===
-  if (convState.state === "ASKING_DELIVERY_METHOD" && isDoneSelecting(text)) {
-    const msg = "¿Es para domicilio o lo recogés en tienda?";
-    insertMessage(convo.id, "assistant", msg);
-    await humanDelay(1000, 2000);
-    try {
-      await sock.sendMessage(remoteJid, { text: msg });
-    } catch (e) {
-      console.error(`[bot] Error enviando pregunta entrega:`, e);
-    }
+  // === Debounce: si ya hay un debounce pendiente para esta conversación,
+  // este mensaje ya está en BD (insertMessage arriba) pero no llamamos al LLM.
+  // El primer mensaje espera 4s y luego llama al LLM con todo el historial. ===
+  if (hasPendingDebounce(tenantId, convo.id)) {
+    console.log(
+      `[bot:${tenantId}] Mensaje acumulado en debounce para ${phone}, esperando flush`,
+    );
     return;
   }
 
-  if (convState.state === "ASKING_ADDRESS" && convState.draft_delivery_method) {
-    const msg = "¿Cuál es la dirección de entrega?";
-    insertMessage(convo.id, "assistant", msg);
-    await humanDelay(1000, 2000);
-    try {
-      await sock.sendMessage(remoteJid, { text: msg });
-    } catch (e) {
-      console.error(`[bot] Error enviando pregunta dirección:`, e);
-    }
-    return;
+  // Esperar a que lleguen más mensajes (debounce)
+  await debounceMessage(tenantId, convo.id, text);
+  console.log(
+    `[bot:${tenantId}] Debounce completado para ${phone}, llamando LLM`,
+  );
+
+  // Mostrar "escribiendo..." mientras se procesa — es una función nativa
+  // de WhatsApp (no un truco), pensada exactamente para esto. Ayuda a que
+  // la espera se sienta como alguien redactando, no como silencio seguido
+  // de un mensaje instantáneo (que sí es un patrón que delata un bot). El
+  // indicador se borra solo cuando llega el mensaje real, no hace falta
+  // "apagarlo" a mano.
+  try {
+    await sock.sendPresenceUpdate("composing", remoteJid);
+  } catch (e) {
+    console.warn(`[bot:${tenantId}] No se pudo mandar presencia "escribiendo":`, e);
   }
 
-  if (
-    convState.state === "ASKING_PAYMENT" &&
-    (convState.draft_delivery_method === "recoger" || convState.draft_address)
-  ) {
-    const msg = "¿Transferencia o efectivo?";
-    insertMessage(convo.id, "assistant", msg);
-    await humanDelay(1000, 2000);
-    try {
-      await sock.sendMessage(remoteJid, { text: msg });
-    } catch (e) {
-      console.error(`[bot] Error enviando pregunta pago:`, e);
-    }
-    return;
-  }
+  // Re-leer historial actualizado (incluye mensajes acumulados durante debounce)
+  const freshHistory = getRecentHistory(convo.id, historyLimit);
 
-  if (convState.state === "WAITING_CONFIRMATION" && convState.draft_payment) {
-    // Mostrar resumen y pedir confirmación
-    const lines: string[] = [];
-    for (const item of convState.draft_items) {
-      const subtotal = item.price * item.quantity;
-      lines.push(
-        `${item.quantity} ${item.name} — $${subtotal.toLocaleString("es-CO")}`,
-      );
-    }
-    const total = computeDraftTotal(convState.draft_items);
-    const delivery =
-      convState.draft_delivery_method === "recoger"
-        ? "Recoger en tienda"
-        : `Domicilio: ${convState.draft_address}`;
-    const payment =
-      convState.draft_payment === "efectivo" ? "Efectivo" : "Transferencia";
-    const msg = `Perfecto, tu pedido sería:\n\n${lines.join("\n")}\nTotal: $${total.toLocaleString("es-CO")}\nEntrega: ${delivery}\nPago: ${payment}\n\n¿Confirmas el pedido?`;
-    insertMessage(convo.id, "assistant", msg);
-    await humanDelay(1000, 2000);
-    try {
-      await sock.sendMessage(remoteJid, { text: msg });
-    } catch (e) {
-      console.error(`[bot] Error enviando resumen:`, e);
-    }
-    return;
-  }
-
-  console.log(`[bot] llamando LLM con ${history.length} mensajes...`);
+  console.log(`[bot] llamando LLM con ${freshHistory.length} mensajes...`);
   const t0 = Date.now();
   let llmResponse: LLMResponse;
   let usage: {
@@ -468,15 +422,108 @@ async function handleSingleMessage(
     costUsd: number;
     durationMs: number;
   } | null = null;
+
+  // Adquirir slot de concurrencia LLM (máx 2 por tenant, 8 global)
+  const llmSlot = await acquireLLMSlot(tenantId);
   try {
-    const result = await generateReply(history, tenantId, {
+    const result = await generateReply(freshHistory, tenantId, {
       customerPhone: phone,
       customerName: pushName,
       conversationState: convState,
+      conversationId: convo.id,
+      tenantId,
+      lastCustomerMessage: text,
     });
     llmResponse = result.response;
     usage = result.usage;
+
+    // Si el LLM confirmó el pedido via tool, enviar confirmación + notificar admin
+    if (result.orderConfirmed && result.confirmedOrderId) {
+      const subtotal = computeDraftTotal(convState.draft_items);
+      const deliveryPrice =
+        convState.draft_delivery_price ?? tenant?.delivery_price ?? 0;
+      const total = subtotal + deliveryPrice;
+      const paymentInfo = tenant?.payment_info || "";
+      let confirmMsg: string;
+      if (convState.draft_payment === "efectivo") {
+        confirmMsg = `¡Pedido confirmado! 🎉\n\nTotal: $${total.toLocaleString("es-CO")}\n\nPago en efectivo. Tenga listo el monto exacto para la entrega 😋\n\n¿Algo más en lo que le pueda ayudar?`;
+      } else {
+        confirmMsg = `¡Pedido confirmado! 🎉\n\nTotal: $${total.toLocaleString("es-CO")}\n\n${paymentInfo}\n\nMándeme el comprobante cuando transfiera y le aviso cuando esté listo 😋`;
+      }
+
+      // Enviar confirmación si el LLM no la incluyó en su reply
+      const replyLower = llmResponse.reply.toLowerCase();
+      if (
+        !replyLower.includes("confirmado") &&
+        !replyLower.includes("pedido #")
+      ) {
+        insertMessage(convo.id, "assistant", confirmMsg);
+        await humanDelay(1000, 3000);
+        try {
+          await sendTextWithSafePreview(sock, remoteJid, confirmMsg);
+          console.log(`[bot] → Confirmación de pedido enviada a ${phone}`);
+        } catch (e) {
+          console.error(`[bot] Error enviando confirmación:`, e);
+        }
+      }
+
+      // Notificar al admin — solo si el admin ya escribió primero
+      try {
+        const adminPhone = tenant?.admin_phone?.trim();
+        if (adminPhone) {
+          const normalizedAdminPhone = adminPhone.replace(/[^\d]/g, "");
+          // Buscar conversación exacta del admin por teléfono real
+          const adminConvo = findConversationByRealPhone(
+            tenantId,
+            normalizedAdminPhone,
+          );
+          // Solo notificar si existe la conversación Y tiene mensajes del admin (role=user)
+          if (adminConvo) {
+            const adminHistory = getRecentHistory(adminConvo.id, 50);
+            const adminHasUserMessage = adminHistory.some(
+              (m) => m.role === "user",
+            );
+            if (adminHasUserMessage) {
+              const dashboardUrl =
+                process.env.DASHBOARD_URL || process.env.NEXTAUTH_URL || "";
+              const orderLink = dashboardUrl
+                ? `${dashboardUrl.replace(/\/$/, "")}/?view=orders`
+                : "";
+              const adminMsg = `🔔 Nuevo pedido #${result.confirmedOrderId}\nCliente: ${pushName || phone}\nTotal: $${total.toLocaleString("es-CO")}${orderLink ? `\nVer: ${orderLink}` : ""}`;
+              insertMessage(adminConvo.id, "assistant", adminMsg);
+              enqueueOutbox(
+                tenantId,
+                adminConvo.id,
+                normalizedAdminPhone,
+                adminMsg,
+                adminConvo.jid,
+              );
+              console.log(
+                `[bot:${tenantId}] Notificación de pedido #${result.confirmedOrderId} encolada para admin ${normalizedAdminPhone}`,
+              );
+            } else {
+              console.log(
+                `[bot:${tenantId}] Admin ${normalizedAdminPhone} no ha activado notificaciones (sin mensajes previos)`,
+              );
+            }
+          } else {
+            console.log(
+              `[bot:${tenantId}] Admin ${normalizedAdminPhone} sin conversación previa — no se notifica`,
+            );
+          }
+        }
+      } catch (notifErr) {
+        console.error(
+          `[bot:${tenantId}] Error notificando al admin:`,
+          notifErr,
+        );
+      }
+
+      // Limpiar estado
+      resetState(convo.id);
+    }
   } catch (err) {
+    llmSlot.release();
     console.error("[bot] Error llamando al LLM:", err);
     recordLLMUsage({
       tenant_id: tenantId,
@@ -494,12 +541,13 @@ async function handleSingleMessage(
       "Ups, tuve un problema procesando tu mensaje. ¿Me lo puedes repetir de otra forma? O si prefieres, te conecto con una persona del equipo.";
     insertMessage(convo.id, "assistant", fallbackMsg);
     try {
-      await sock.sendMessage(remoteJid, { text: fallbackMsg });
+      await sendTextWithSafePreview(sock, remoteJid, fallbackMsg);
     } catch (e) {
       console.error("[bot] Error enviando mensaje de fallback:", e);
     }
     return;
   }
+  llmSlot.release();
   console.log(`[bot] LLM respondió en ${Date.now() - t0}ms`);
 
   // Registrar uso de tokens y costo
@@ -519,19 +567,119 @@ async function handleSingleMessage(
     );
   }
 
-  // Si estamos en SELECTING_PRODUCTS con items y el LLM no preguntó "algo más", forzarlo
+  // SAFETY NET: si el LLM dice "anotad"/"agregad" pero el draft está vacío,
+  // el LLM no llamó addItem. Extraer productos del mensaje del usuario y agregarlos.
+  const replyLower = llmResponse.reply.toLowerCase();
+  const freshState = getStateForConversation(convo.id, tenantId);
   if (
-    convState.state === "SELECTING_PRODUCTS" &&
-    convState.draft_items.length > 0 &&
-    llmResponse.intent !== "create_order"
+    freshState.draft_items.length === 0 &&
+    (replyLower.includes("anotad") ||
+      replyLower.includes("agregad") ||
+      replyLower.includes("añadid"))
   ) {
-    const replyLower = llmResponse.reply.toLowerCase();
-    if (
-      !replyLower.includes("algo más") &&
-      !replyLower.includes("algo mas") &&
-      !replyLower.includes("algo más?")
+    console.warn(
+      `[bot:${tenantId}] LLM dijo "anotado" pero draft vacío — safety net activado`,
+    );
+    const result = tryAddProductsFromText(freshState, text);
+    if (result.added) {
+      computeStateFromDraft(freshState);
+      saveState(freshState);
+      const itemsList = result.products
+        .map((p) => `- ${p.quantity}x ${p.name}`)
+        .join("\n");
+      llmResponse.reply = `¡Listo! Anotadas:\n${itemsList}\n\n¿Quiere algo más?`;
+      console.log(
+        `[bot:${tenantId}] Safety net agregó: ${result.products.map((p) => `${p.quantity}x ${p.name}`).join(", ")}`,
+      );
+    }
+  }
+
+  // SAFETY NET: si el LLM dice "no tenemos X" sin haber llamado tools,
+  // buscar el producto en la BD y corregir la respuesta si existe.
+  if (
+    replyLower.includes("no tenemos") ||
+    replyLower.includes("no hay") ||
+    replyLower.includes("no contamos con")
+  ) {
+    const noTenemosMatch = llmResponse.reply.match(
+      /no (?:tenemos|hay|contamos con)\s+([^.,\n]+)/i,
+    );
+    if (noTenemosMatch) {
+      const productName = noTenemosMatch[1].trim();
+      const results = searchProducts(tenantId, productName, 3);
+      if (results.length > 0) {
+        console.warn(
+          `[bot:${tenantId}] Safety net: LLM dijo "no tenemos ${productName}" pero SÍ existe — corrigiendo`,
+        );
+        const found = results[0];
+        if (found.stock > 0) {
+          llmResponse.reply = `¡Sí lo tenemos! ${found.name} a $${found.price.toLocaleString("es-CO")}. ¿Le anoto alguno?`;
+        } else {
+          llmResponse.reply = `Sí tenemos ${found.name} ($${found.price.toLocaleString("es-CO")}), pero momentaneamente sin stock. ¿Le ofrezco algo más?`;
+        }
+      }
+    }
+  }
+
+  // SAFETY NET: si el LLM lista productos de memoria (menciona 3+ productos
+  // con precios o guiones) pero no envió el catálogo, reemplazar con catálogo.
+  const catalogUrl = tenant?.catalog_url || "";
+  if (
+    catalogUrl &&
+    !replyLower.includes(catalogUrl.toLowerCase()) &&
+    !replyLower.includes("catálogo") &&
+    !replyLower.includes("catalogo")
+  ) {
+    // Detectar listas de productos: líneas con guión, o líneas con producto + precio
+    const bulletMatches = llmResponse.reply.match(/^- .+/gm);
+    const priceMatches = llmResponse.reply.match(/\$[\d.,]+/g);
+    const productCount = Math.max(
+      bulletMatches?.length ?? 0,
+      priceMatches?.length ?? 0,
+    );
+    // Detectar más variaciones de "qué tienes / qué hay / muéstrame el menú"
+    const asksForMenu =
+      /qué tienen|que tienen|qué hay|que hay|menú|menu|catálogo|catalogo|ver.*producto|qué venden|que venden|qué ofrecen|que ofrecen|tienes.*fresco|tienes.*dulce|tienes.*salado|muéstrame|muestrame|cuáles son|cuales son|lista de|ver la lista/i.test(
+        text,
+      );
+    if (asksForMenu && productCount >= 3) {
+      console.warn(
+        `[bot:${tenantId}] Safety net: LLM listó ${productCount} productos de memoria en vez de enviar catálogo — corrigiendo`,
+      );
+      llmResponse.reply = `Le dejo el catálogo para que le eche un ojo 👇\n${catalogUrl}`;
+    }
+  }
+
+  // Anti-bucle: si el LLM repite exactamente su mensaje anterior, redirigir
+  // según el dato pendiente del draft (última línea de defensa)
+  const lastAssistantMsg = [...history]
+    .reverse()
+    .find((m) => m.role === "assistant")?.content;
+  if (
+    lastAssistantMsg &&
+    llmResponse.reply.trim() === lastAssistantMsg.trim()
+  ) {
+    console.warn(
+      `[bot:${tenantId}] LLM repitió su mensaje anterior, redirigiendo`,
+    );
+    // Releer estado actualizado (los tools pueden haberlo cambiado)
+    const freshState = getStateForConversation(convo.id, tenantId);
+    if (freshState.draft_items.length === 0) {
+      llmResponse.reply = "¿Qué le gustaría pedir?";
+    } else if (!freshState.draft_delivery_method) {
+      llmResponse.reply = "¿Es para domicilio o lo recoge en tienda?";
+    } else if (
+      freshState.draft_delivery_method === "domicilio" &&
+      !freshState.draft_address
     ) {
-      llmResponse.reply += " ¿Querés algo más?";
+      llmResponse.reply = "¿Cuál es el barrio y la dirección de entrega?";
+    } else if (!freshState.draft_payment) {
+      llmResponse.reply = "¿Transferencia o efectivo?";
+    } else {
+      const subtotal = computeDraftTotal(freshState.draft_items);
+      const deliveryPrice = freshState.draft_delivery_price ?? 0;
+      const total = subtotal + deliveryPrice;
+      llmResponse.reply = `Total: $${total.toLocaleString("es-CO")}. ¿Confirma el pedido?`;
     }
   }
 
@@ -542,28 +690,27 @@ async function handleSingleMessage(
   console.log(`[bot] Enviando respuesta LLM a ${phone}...`);
 
   try {
-    await sock.sendMessage(remoteJid, { text: llmResponse.reply });
+    await sendTextWithSafePreview(sock, remoteJid, llmResponse.reply);
     console.log(`[bot] → Enviado a ${phone}`);
   } catch (err) {
     console.error(`[bot] Error enviando a ${phone}:`, err);
   }
 
-  // Si es la primera interacción y NO hubo saludo programático,
-  // enviar el bloque de links después de la respuesta del LLM
-  // (solo si el LLM no incluyó el catálogo en su respuesta)
+  // Si es primera interacción y no hubo saludo programático,
+  // enviar el catálogo instantáneamente después de la respuesta del LLM
   if (isFirstMessage && !tenant?.custom_greeting) {
     const linksMsg = buildLinksMessage(tenantId);
     const catalogUrl = tenant?.catalog_url || "";
     const llmAlreadySentCatalog =
       catalogUrl && llmResponse.reply.includes(catalogUrl);
     if (linksMsg && !llmAlreadySentCatalog) {
-      await humanDelay(800, 2000);
+      await humanDelay(500, 1500);
       try {
-        await sock.sendMessage(remoteJid, { text: linksMsg });
+        await sendTextWithSafePreview(sock, remoteJid, linksMsg);
         insertMessage(convo.id, "assistant", linksMsg);
-        console.log(`[bot] → Links enviados a ${phone}`);
+        console.log(`[bot] → Catálogo enviado a ${phone}`);
       } catch (err) {
-        console.error(`[bot] Error enviando links a ${phone}:`, err);
+        console.error(`[bot] Error enviando catálogo a ${phone}:`, err);
       }
     }
   }
@@ -589,7 +736,7 @@ export async function processOutbox(
     // construirlo desde el phone para outbox legacy.
     const jid = item.remote_jid ?? `${item.phone}@s.whatsapp.net`;
     try {
-      await sock.sendMessage(jid, { text: item.content });
+      await sendTextWithSafePreview(sock, jid, item.content);
       markOutboxSent(item.id);
       console.log(`[bot] → Outbox #${item.id} enviado a ${jid}`);
     } catch (err) {

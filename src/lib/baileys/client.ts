@@ -348,7 +348,7 @@ async function start(tenantId: number): Promise<void> {
   }
 }
 
-const MAX_RECONNECT_RETRIES = 20;
+const MAX_RECONNECT_RETRIES = 5;
 
 function scheduleReconnect(tenantId: number, code?: number): void {
   const state = getOrCreateState(tenantId);

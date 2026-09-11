@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTenantById, updateTenantConfig, type TenantLink } from "@/lib/db";
 import { requireAuth } from "@/lib/tenant";
+import { extractLatLngFromUrl } from "@/lib/geo";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +13,17 @@ export async function GET(req: NextRequest) {
     return res as Response;
   }
 
-  const tenant = getTenantById(ctx.tenantId);
+  const queryTenant = Number(req.nextUrl.searchParams.get("tenantId") ?? 0);
+  const tenantId =
+    ctx.isSuperAdmin && queryTenant > 0 ? queryTenant : ctx.tenantId;
+  if (tenantId == null) {
+    return NextResponse.json(
+      { error: "Tenant no encontrado en la sesión" },
+      { status: 403 },
+    );
+  }
+
+  const tenant = getTenantById(tenantId);
   if (!tenant) {
     return NextResponse.json(
       { error: "Tenant no encontrado" },
@@ -57,6 +68,18 @@ export async function GET(req: NextRequest) {
     },
     out_of_hours_message: tenant.out_of_hours_message,
     extra_links: extraLinks,
+    feedback_message: tenant.feedback_message,
+    admin_phone: tenant.admin_phone,
+    delivery_price: tenant.delivery_price,
+    business_location_url: tenant.business_location_url,
+    business_location_detected:
+      tenant.business_lat != null && tenant.business_lng != null,
+    price_per_km: tenant.price_per_km,
+    max_delivery_km: tenant.max_delivery_km,
+    min_order_amount: tenant.min_order_amount,
+    min_delivery_price: tenant.min_delivery_price,
+    bot_paused: tenant.bot_paused === 1,
+    paused_message: tenant.paused_message,
   });
 }
 
@@ -105,6 +128,46 @@ export async function PUT(req: NextRequest) {
   const out_of_hours_message = String(body.out_of_hours_message ?? "")
     .trim()
     .slice(0, 300);
+  const feedback_message = String(body.feedback_message ?? "")
+    .trim()
+    .slice(0, 500);
+  const admin_phone = String(body.admin_phone ?? "")
+    .trim()
+    .slice(0, 20);
+  const delivery_price =
+    body.delivery_price != null
+      ? Math.max(0, Math.floor(Number(body.delivery_price)))
+      : null;
+  const business_location_url = String(body.business_location_url ?? "")
+    .trim()
+    .slice(0, 500);
+  const price_per_km =
+    body.price_per_km != null
+      ? Math.max(0, Math.floor(Number(body.price_per_km)))
+      : null;
+  const min_order_amount =
+    body.min_order_amount != null && body.min_order_amount !== ""
+      ? Math.max(0, Math.floor(Number(body.min_order_amount)))
+      : null;
+  const min_delivery_price =
+    body.min_delivery_price != null && body.min_delivery_price !== ""
+      ? Math.max(0, Math.floor(Number(body.min_delivery_price)))
+      : null;
+
+  // max_delivery_km, bot_paused y paused_message son "solo super-admin" —
+  // ya estaban sacados del panel del tenant en la UI, pero el PUT los
+  // seguía aceptando de CUALQUIER usuario autenticado (un tenant con
+  // devtools/curl podía mandarlos igual). Se calculan solo si quien llama
+  // es super-admin; si no, más abajo se preservan los valores que ya
+  // tenía el tenant en vez de dejar que el body los pise.
+  const max_delivery_km =
+    body.max_delivery_km != null && body.max_delivery_km !== ""
+      ? Math.min(200, Math.max(0.5, Number(body.max_delivery_km)))
+      : null;
+  const bot_paused = !!body.bot_paused;
+  const paused_message = String(body.paused_message ?? "")
+    .trim()
+    .slice(0, 300);
 
   // Validar y serializar business_hours
   let business_hours_json: string | null = null;
@@ -136,7 +199,40 @@ export async function PUT(req: NextRequest) {
     }
   }
 
-  updateTenantConfig(ctx.tenantId, {
+  const queryTenant = Number(req.nextUrl.searchParams.get("tenantId") ?? 0);
+  const tenantId =
+    ctx.isSuperAdmin && queryTenant > 0 ? queryTenant : ctx.tenantId;
+  if (tenantId == null) {
+    return NextResponse.json(
+      { error: "Tenant no encontrado en la sesión" },
+      { status: 403 },
+    );
+  }
+
+  // Extraer lat/lng del URL de Google Maps si se proporcionó
+  let business_lat: number | null = null;
+  let business_lng: number | null = null;
+  if (business_location_url) {
+    const coords = await extractLatLngFromUrl(business_location_url);
+    if (coords) {
+      business_lat = coords.lat;
+      business_lng = coords.lng;
+    }
+  }
+
+  // Campos solo-super-admin: si quien llama es un tenant normal, no dejar
+  // que el body los cambie — preservar lo que ya había guardado.
+  let effectiveMaxDeliveryKm = max_delivery_km;
+  let effectiveBotPaused = bot_paused;
+  let effectivePausedMessage = paused_message || null;
+  if (!ctx.isSuperAdmin) {
+    const current = getTenantById(tenantId);
+    effectiveMaxDeliveryKm = current?.max_delivery_km ?? null;
+    effectiveBotPaused = current?.bot_paused === 1;
+    effectivePausedMessage = current?.paused_message ?? null;
+  }
+
+  updateTenantConfig(tenantId, {
     business_name: business_name || null,
     business_type: business_type || null,
     payment_info: payment_info || null,
@@ -149,7 +245,25 @@ export async function PUT(req: NextRequest) {
     business_hours: business_hours_json,
     out_of_hours_message: out_of_hours_message || null,
     extra_links: extra_links_json,
+    feedback_message: feedback_message || null,
+    admin_phone: admin_phone || null,
+    delivery_price: delivery_price,
+    business_location_url: business_location_url || null,
+    price_per_km: price_per_km,
+    max_delivery_km: effectiveMaxDeliveryKm,
+    min_order_amount: min_order_amount,
+    min_delivery_price: min_delivery_price,
+    bot_paused: effectiveBotPaused,
+    paused_message: effectivePausedMessage,
   });
+
+  // Guardar lat/lng directamente en la BD
+  if (business_lat !== null && business_lng !== null) {
+    const db = (await import("@/lib/db")).default;
+    db.prepare(
+      "UPDATE tenants SET business_lat = ?, business_lng = ? WHERE id = ?",
+    ).run(business_lat, business_lng, tenantId);
+  }
 
   return NextResponse.json({ ok: true });
 }
