@@ -294,7 +294,14 @@ async function start(tenantId: number): Promise<void> {
         return;
       }
 
-      // Alertar desconexiones inesperadas (no loggedOut ni restart manual)
+      // BUG real encontrado (2026-09-11): esto mandaba la alerta en CADA
+      // cierre de conexión, incluyendo los reconectes normales/transitorios
+      // que pasan todo el tiempo (se ve en los logs constantemente) — con
+      // el webhook configurado, eso sería un diluvio de alertas por cosas
+      // que se resuelven solas en segundos, no algo que de verdad necesite
+      // que el asesor haga algo. La alerta ahora se manda solo cuando de
+      // verdad se agotan los reintentos (ver scheduleReconnect) — ahí sí
+      // es una señal real de que hay que revisar ese tenant.
       const reasonText =
         code === DisconnectReason.connectionClosed
           ? "Conexión cerrada por WhatsApp"
@@ -303,9 +310,12 @@ async function start(tenantId: number): Promise<void> {
             : code === DisconnectReason.timedOut
               ? "Timeout de conexión"
               : `Código ${code}`;
-      void sendDisconnectionAlert(tenantId, reasonText);
 
-      scheduleReconnect(tenantId, typeof code === "number" ? code : undefined);
+      scheduleReconnect(
+        tenantId,
+        typeof code === "number" ? code : undefined,
+        reasonText,
+      );
     }
   });
 
@@ -350,7 +360,11 @@ async function start(tenantId: number): Promise<void> {
 
 const MAX_RECONNECT_RETRIES = 5;
 
-function scheduleReconnect(tenantId: number, code?: number): void {
+function scheduleReconnect(
+  tenantId: number,
+  code?: number,
+  reasonText?: string,
+): void {
   const state = getOrCreateState(tenantId);
   if (state.reconnectTimer) return;
 
@@ -363,6 +377,10 @@ function scheduleReconnect(tenantId: number, code?: number): void {
       qr_string: null,
       phone: null,
     });
+    void sendDisconnectionAlert(
+      tenantId,
+      `${reasonText ?? `Código ${code}`} — se agotaron los ${MAX_RECONNECT_RETRIES} reintentos, el bot quedó desconectado y no lo va a intentar de nuevo solo.`,
+    );
     return;
   }
 

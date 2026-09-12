@@ -600,38 +600,42 @@ const stmtSeedPlans = db.prepare<
   `INSERT OR IGNORE INTO plans (name, slug, daily_chat_limit, price_cop, price_usd, description)
    VALUES (?, ?, ?, ?, ?, ?)`,
 );
-stmtSeedPlans.run("Gratis", "free", 10, 0, 0, "10 chats/día para probar");
+// Planes reales de OrdiFast (definidos 2026-09-11): 3 niveles pagos por
+// chats/día + una prueba gratuita. `INSERT OR IGNORE` no actualiza filas
+// que ya existan con ese slug — si el precio real cambia más adelante,
+// hay que correr un UPDATE aparte, este seed solo aplica en una base
+// nueva que todavía no tiene estos planes.
 stmtSeedPlans.run(
   "Prueba",
   "trial",
+  15,
+  0,
+  0,
+  "Prueba gratuita 15 días - 15 chats/día",
+);
+stmtSeedPlans.run(
+  "Básico",
+  "basico",
+  10,
+  60000,
+  15.0,
+  "10 chats/día",
+);
+stmtSeedPlans.run(
+  "Intermedio",
+  "intermedio",
+  25,
+  110000,
+  27.5,
+  "25 chats/día",
+);
+stmtSeedPlans.run(
+  "Avanzado",
+  "avanzado",
   50,
-  80000,
-  20.0,
-  "Prueba 15 días - 50 chats/día",
-);
-stmtSeedPlans.run(
-  "Starter",
-  "starter",
-  30,
-  49000,
-  12.25,
-  "30 chats/día - cafetería, tienda chica",
-);
-stmtSeedPlans.run(
-  "Pro",
-  "pro",
-  50,
-  75000,
-  18.75,
-  "50 chats/día - restaurante, ferretería",
-);
-stmtSeedPlans.run(
-  "Business",
-  "business",
-  999999,
-  120000,
-  30.0,
-  "Ilimitado - farmacia, supermercado",
+  200000,
+  50.0,
+  "50 chats/día",
 );
 
 // Migración idempotente: agregar columna `theme` a tenants si falta.
