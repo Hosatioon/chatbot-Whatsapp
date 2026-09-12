@@ -16,6 +16,7 @@ import {
   listTenants,
   listActiveTenantsForBot,
   setConnectionState,
+  purgeOldConversationMessages,
 } from "../src/lib/db";
 import { runBackupCycle } from "./backup";
 
@@ -102,6 +103,38 @@ async function main(): Promise<void> {
   }, BACKUP_INTERVAL_MS);
   console.log(
     `[bot] Backups automáticos cada ${process.env.BACKUP_INTERVAL_HOURS || "6"}h`,
+  );
+
+  // Retención de mensajes: borra el TEXTO de conversaciones sin actividad
+  // reciente (no los pedidos, esos se quedan siempre). Por inactividad
+  // real, no por fecha de calendario — un negocio que cierra pasada la
+  // medianoche no tiene un "fin de día" limpio para cortar por ahí.
+  const MESSAGE_RETENTION_DAYS = parseInt(
+    process.env.MESSAGE_RETENTION_DAYS || "90",
+    10,
+  );
+  function runMessagePurge(): void {
+    try {
+      const deleted = purgeOldConversationMessages(MESSAGE_RETENTION_DAYS);
+      if (deleted > 0) {
+        console.log(
+          `[bot] Limpieza de mensajes: ${deleted} mensajes borrados (conversaciones con ${MESSAGE_RETENTION_DAYS}+ días sin actividad)`,
+        );
+      }
+    } catch (err) {
+      console.warn("[bot] Error en limpieza de mensajes:", err);
+    }
+  }
+  runMessagePurge();
+  setInterval(
+    () => {
+      if (shuttingDown) return;
+      runMessagePurge();
+    },
+    24 * 60 * 60 * 1000,
+  );
+  console.log(
+    `[bot] Limpieza de mensajes automática cada 24h (retención: ${MESSAGE_RETENTION_DAYS} días de inactividad)`,
   );
 
   await startAllTenants();

@@ -2022,6 +2022,29 @@ export function purgeOldMessageEvents(olderThanSeconds = 7200): void {
 }
 
 // ---------------------------------------------------------------------------
+// Retención de mensajes: se borra el TEXTO de la conversación después de
+// mucho tiempo sin actividad — no por fecha de calendario (un negocio que
+// cierra pasada la medianoche no tiene un "fin de día" limpio), sino por
+// inactividad real de esa conversación puntual. Los PEDIDOS (orders) NUNCA
+// se tocan acá — son el registro real de la venta, se quedan indefinidos.
+// La fila de `conversations` tampoco se borra (se necesita para saber que
+// ese cliente ya existió, y para las métricas de clientes recurrentes),
+// solo su historial de mensajes.
+// ---------------------------------------------------------------------------
+
+const stmtPurgeOldConversationMessages = db.prepare<[number]>(
+  `DELETE FROM messages WHERE conversation_id IN (
+     SELECT id FROM conversations WHERE last_message_at IS NOT NULL AND last_message_at < ?
+   )`,
+);
+
+export function purgeOldConversationMessages(inactivityDays = 90): number {
+  const cutoff = Math.floor(Date.now() / 1000) - inactivityDays * 86400;
+  const info = stmtPurgeOldConversationMessages.run(cutoff);
+  return info.changes;
+}
+
+// ---------------------------------------------------------------------------
 // Dedup persistente de mensajes entrantes de WhatsApp
 // ---------------------------------------------------------------------------
 
