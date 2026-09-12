@@ -819,6 +819,61 @@ if (!hasColumn("known_places", "source")) {
   );
 }
 
+// Migración: known_places pasa de ser por-tenant a compartido en toda la
+// plataforma. Un lugar físico (ej: "Conjunto Boreal" en tal lat/lng) es un
+// hecho geográfico, no un dato de negocio — no hay razón para que cada
+// tenant nuevo tenga que redescubrirlo (mismas llamadas a Nominatim/OSRM,
+// mismo trabajo de desambiguación) cuando otro tenant ya lo resolvió. Los
+// datos de CLIENTES (customer_addresses, orders, conversations) siguen
+// 100% separados por tenant como siempre — esto solo comparte la
+// geografía, nunca quién pidió qué ni a quién.
+function knownPlacesNeedsGlobalMigration(): boolean {
+  const indexes = db
+    .prepare<[], { name: string; unique: number; origin: string }>(
+      `PRAGMA index_list(known_places)`,
+    )
+    .all();
+  for (const idx of indexes) {
+    if (idx.origin === "u" && idx.unique === 1) {
+      const cols = db
+        .prepare<[], { name: string }>(`PRAGMA index_info(${idx.name})`)
+        .all();
+      if (cols.length === 1 && cols[0].name === "name") {
+        return false; // ya tiene UNIQUE(name) solo — ya migrado
+      }
+    }
+  }
+  return true;
+}
+
+if (knownPlacesNeedsGlobalMigration()) {
+  db.pragma("foreign_keys = OFF");
+  db.exec(`
+    BEGIN TRANSACTION;
+    CREATE TABLE known_places_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      aliases TEXT,
+      lat REAL NOT NULL,
+      lng REAL NOT NULL,
+      times_used INTEGER DEFAULT 1,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      source TEXT NOT NULL DEFAULT 'confirmed',
+      UNIQUE(name)
+    );
+    INSERT OR IGNORE INTO known_places_new
+      (id, tenant_id, name, aliases, lat, lng, times_used, created_at, source)
+      SELECT id, tenant_id, name, aliases, lat, lng, times_used, created_at, source
+      FROM known_places;
+    DROP TABLE known_places;
+    ALTER TABLE known_places_new RENAME TO known_places;
+    CREATE INDEX idx_known_places_tenant ON known_places(tenant_id);
+    COMMIT;
+  `);
+  db.pragma("foreign_keys = ON");
+}
+
 // Tabla de direcciones frecuentes por cliente
 db.exec(`
   CREATE TABLE IF NOT EXISTS customer_addresses (
@@ -3018,24 +3073,30 @@ function normalizeText(s: string): string {
     .trim();
 }
 
-const stmtFindKnownPlace = db.prepare<[number, string], KnownPlace>(
-  `SELECT * FROM known_places WHERE tenant_id = ? AND LOWER(name) = ?`,
+// known_places es compartido entre todos los tenants (ver migración
+// arriba) — un lugar físico es el mismo sin importar qué negocio lo
+// consulte, así que estas consultas ya NO filtran por tenant_id. La
+// columna sigue existiendo solo como referencia de qué tenant lo generó
+// primero, nunca se usa para restringir qué puede ver cada uno.
+const stmtFindKnownPlace = db.prepare<[string], KnownPlace>(
+  `SELECT * FROM known_places WHERE LOWER(name) = ?`,
 );
 
-// Trae todos los lugares del tenant para comparar en JS (nombre y alias
-// en ambas direcciones). Un LIKE a nivel SQL solo contra `name` se pierde
-// los casos donde la consulta del cliente trae MÁS palabras que el
-// nombre guardado (ej: guardado "Guaduales del Otún", cliente escribe
-// "guaduales del otun dosquebradas") — ahí `name LIKE '%query%'` nunca
-// matchea porque `name` es más corto que `query`.
-const stmtListKnownPlaces = db.prepare<[number], KnownPlace>(
-  `SELECT * FROM known_places WHERE tenant_id = ? ORDER BY times_used DESC`,
+// Trae TODOS los lugares conocidos (de cualquier tenant) para comparar en
+// JS (nombre y alias en ambas direcciones). Un LIKE a nivel SQL solo
+// contra `name` se pierde los casos donde la consulta del cliente trae
+// MÁS palabras que el nombre guardado (ej: guardado "Guaduales del Otún",
+// cliente escribe "guaduales del otun dosquebradas") — ahí
+// `name LIKE '%query%'` nunca matchea porque `name` es más corto que
+// `query`.
+const stmtListKnownPlaces = db.prepare<[], KnownPlace>(
+  `SELECT * FROM known_places ORDER BY times_used DESC`,
 );
 
 const stmtUpsertKnownPlace = db.prepare(
   `INSERT INTO known_places (tenant_id, name, aliases, lat, lng, times_used, created_at, source)
    VALUES (?, ?, ?, ?, ?, 1, unixepoch(), ?)
-   ON CONFLICT(tenant_id, name) DO UPDATE SET
+   ON CONFLICT(name) DO UPDATE SET
      lat = excluded.lat,
      lng = excluded.lng,
      times_used = times_used + 1,
@@ -3053,14 +3114,21 @@ const stmtIncrementKnownPlaceUsage = db.prepare(
 // "CONJUNTO RESIDENCIAL LA ARBOLEDA" como "CONDOMINIO ARBOLEDA DEL RIO",
 // en coordenadas completamente distintas) en vez de adivinar cuál quiso
 // decir el cliente y mandar el domicilio al lugar equivocado.
+//
+// `tenantId` se mantiene en la firma para no tener que tocar cada lugar
+// que la llama, pero ya NO filtra nada — known_places es compartido en
+// toda la plataforma (ver migración más arriba), así que un lugar que un
+// tenant ya confirmó lo puede reutilizar cualquier otro sin tener que
+// redescubrirlo. Solo se comparte la geografía; los pedidos/clientes de
+// cada negocio siguen completamente separados como siempre.
 export function findKnownPlaces(tenantId: number, query: string): KnownPlace[] {
   const normalized = normalizeText(query);
   // Coincidencia exacta de nombre: inequívoca por definición (el nombre
   // es único por tenant), no hace falta revisar más candidatos.
-  const exact = stmtFindKnownPlace.get(tenantId, normalized);
+  const exact = stmtFindKnownPlace.get(normalized);
   if (exact) return [exact];
 
-  const all = stmtListKnownPlaces.all(tenantId);
+  const all = stmtListKnownPlaces.all();
   const matches: KnownPlace[] = [];
   for (const r of all) {
     let matched = false;
@@ -3103,12 +3171,12 @@ export function findKnownPlace(
 ): KnownPlace | null {
   const normalized = normalizeText(query);
   // Exact match
-  const exact = stmtFindKnownPlace.get(tenantId, normalized);
+  const exact = stmtFindKnownPlace.get(normalized);
   if (exact) return exact;
 
-  // Comparar contra todos los lugares del tenant (nombre y alias, en
+  // Comparar contra todos los lugares conocidos (nombre y alias, en
   // ambas direcciones de contención) — ver nota en stmtListKnownPlaces.
-  const all = stmtListKnownPlaces.all(tenantId);
+  const all = stmtListKnownPlaces.all();
   for (const r of all) {
     if (r.aliases) {
       try {
