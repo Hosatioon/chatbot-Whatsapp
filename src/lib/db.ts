@@ -1367,7 +1367,7 @@ const stmtGetProductByIdScoped = db.prepare<[number, number], Product>(
 );
 
 const stmtGetActiveProducts = db.prepare<[number], Product>(
-  "SELECT id, tenant_id, name, price, stock, active, description, created_at, variants FROM products WHERE tenant_id = ? AND active = 1 ORDER BY name ASC",
+  "SELECT id, tenant_id, name, price, stock, active, description, created_at, variants FROM products WHERE tenant_id = ? AND active = 1 ORDER BY name COLLATE NOCASE ASC",
 );
 
 const stmtInsertProduct = db.prepare<
@@ -1484,7 +1484,7 @@ const stmtSearchProducts = db.prepare<
   [number, string, string, number],
   Product
 >(
-  `SELECT * FROM products WHERE tenant_id = ? AND active = 1 AND (LOWER(name) LIKE ? OR LOWER(description) LIKE ?) ORDER BY name ASC LIMIT ?`,
+  `SELECT * FROM products WHERE tenant_id = ? AND active = 1 AND (LOWER(name) LIKE ? OR LOWER(description) LIKE ?) ORDER BY name COLLATE NOCASE ASC LIMIT ?`,
 );
 
 const stmtAllActiveProducts = db.prepare<[number], Product>(
@@ -1588,7 +1588,7 @@ const stmtGetProductByNameExact = db.prepare<[number, string], Product>(
   `SELECT * FROM products WHERE tenant_id = ? AND active = 1 AND LOWER(name) = ? LIMIT 1`,
 );
 const stmtGetProductByNameLike = db.prepare<[number, string], Product>(
-  `SELECT * FROM products WHERE tenant_id = ? AND active = 1 AND LOWER(name) LIKE ? ORDER BY name ASC LIMIT 1`,
+  `SELECT * FROM products WHERE tenant_id = ? AND active = 1 AND LOWER(name) LIKE ? ORDER BY name COLLATE NOCASE ASC LIMIT 1`,
 );
 
 export function getProductByName(
@@ -1639,7 +1639,16 @@ export function decrementStock(
 }
 
 const stmtGetTopProducts = db.prepare<[number, number], Product>(
-  `SELECT * FROM products WHERE tenant_id = ? AND active = 1 AND stock > 0 ORDER BY name ASC LIMIT ?`,
+  // BUG real encontrado (2026-09-12): esta lista alimenta el catálogo
+  // "PRODUCTOS PRINCIPALES" que ve el LLM en el prompt. Con ORDER BY name
+  // normal (case-sensitive), un producto con la primera palabra en
+  // minúscula (ej: "Galleta de pistacho") queda ordenado DESPUÉS de todos
+  // los que empiezan con mayúscula, cayéndose del LIMIT/top-10 aunque
+  // alfabéticamente debería estar ahí. El cliente pidió "pistacho", el LLM
+  // no lo vio en su lista de contexto y terminó anotando "Limón" (que sí
+  // aparecía justo ahí) en su lugar — pedido mal anotado. COLLATE NOCASE
+  // ordena por letra sin importar mayúsculas/minúsculas, como debe ser.
+  `SELECT * FROM products WHERE tenant_id = ? AND active = 1 AND stock > 0 ORDER BY name COLLATE NOCASE ASC LIMIT ?`,
 );
 
 export function getTopProducts(tenantId: number, limit = 10): Product[] {

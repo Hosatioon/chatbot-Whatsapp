@@ -79,16 +79,29 @@ function buildSystemPrompt(
   conversationState?: ConversationState,
 ): string {
   const basePrompt = buildSystemPromptForTenant(tenantId, conversationState);
-  // Inyectar solo top 10 productos como referencia rápida
-  const top = getTopProducts(tenantId, 10);
+  // BUG real encontrado (2026-09-12): con el límite en 10, un negocio con
+  // más de 10 productos activos (típico: 15-20) dejaba productos reales
+  // fuera de esta lista. El cliente pidió "pistacho" (producto #13
+  // alfabéticamente), el LLM no lo vio en su contexto y en su lugar anotó
+  // "Limón" (que sí estaba en la lista) — pedido mal anotado. Subimos el
+  // límite para cubrir catálogos completos de negocios chicos/medianos
+  // (Ordifast apunta a ese tamaño); el mensaje de abajo sigue avisando que
+  // puede ser parcial para catálogos grandes.
+  const CATALOG_PROMPT_LIMIT = 40;
+  const top = getTopProducts(tenantId, CATALOG_PROMPT_LIMIT);
   let catalog = "";
   if (top.length > 0) {
-    catalog = "\n\n--- PRODUCTOS PRINCIPALES (solo nombres) ---\n";
+    catalog = "\n\n--- PRODUCTOS (solo nombres) ---\n";
     for (const p of top) {
       catalog += `- ${p.name}\n`;
     }
-    catalog +=
-      "\nEsta lista es PARCIAL. Para precios y stock, usá searchProducts o getStock.\n";
+    if (top.length >= CATALOG_PROMPT_LIMIT) {
+      catalog +=
+        "\nEsta lista puede ser PARCIAL si el catálogo es más grande. Para precios y stock, o si no ves un producto que el cliente pidió, usá searchProducts o getStock — NUNCA asumas que no existe ni lo reemplaces por otro.\n";
+    } else {
+      catalog +=
+        "\nEsta es la lista COMPLETA de productos activos. Si el cliente pide algo que no está aquí, probablemente no lo tenemos — pero igual usá searchProducts para confirmar antes de decir que no hay.\n";
+    }
   }
   return basePrompt + catalog;
 }
@@ -473,6 +486,19 @@ export async function generateReply(
   // varias opciones (con link de mapa por cada una) — se manda tal cual,
   // no se deja que el LLM la reescriba y arriesgue perder un link.
   let ambiguousAddressReply: string | undefined;
+  // BUG real encontrado (2026-09-12): con un producto agotado (stock 0) y
+  // el cliente insistiendo varias veces, el LLM llegó a llamar addItem con
+  // un producto (ej: "Galleta de Cheesecake de fresa") y en su respuesta de
+  // texto decirle al cliente que había anotado OTRO totalmente distinto
+  // (ej: "Galleta de Nutella") — el pedido real en el backend no tenía
+  // nada que ver con lo que el cliente creía haber pedido. Guardamos acá
+  // qué se agregó/quitó DE VERDAD en este turno para poder verificar que
+  // la respuesta del LLM lo mencione antes de mandarla (ver más abajo).
+  const itemActionsThisCall: {
+    action: "added" | "removed";
+    name: string;
+    quantity: number;
+  }[] = [];
   for (let round = 0; round < 3; round++) {
     const msg = completion.choices[0]?.message;
     if (!msg?.tool_calls || msg.tool_calls.length === 0) break;
@@ -565,6 +591,26 @@ export async function generateReply(
             const parsed = JSON.parse(toolResult.result);
             if (parsed.success && parsed.summary) {
               paymentSummary = parsed.summary;
+            }
+          } catch {
+            // ignorar
+          }
+        }
+        if (fnName === "addItem" || fnName === "removeItem") {
+          try {
+            const parsed = JSON.parse(toolResult.result);
+            if (parsed.success && parsed.added) {
+              itemActionsThisCall.push({
+                action: "added",
+                name: parsed.added.name,
+                quantity: parsed.added.quantity,
+              });
+            } else if (parsed.success && parsed.removed) {
+              itemActionsThisCall.push({
+                action: "removed",
+                name: parsed.removed.name,
+                quantity: parsed.removed.quantity,
+              });
             }
           } catch {
             // ignorar
@@ -735,6 +781,29 @@ export async function generateReply(
                 // ignorar
               }
             }
+            if (
+              toolCall.function.name === "addItem" ||
+              toolCall.function.name === "removeItem"
+            ) {
+              try {
+                const p = JSON.parse(toolResult.result);
+                if (p.success && p.added) {
+                  itemActionsThisCall.push({
+                    action: "added",
+                    name: p.added.name,
+                    quantity: p.added.quantity,
+                  });
+                } else if (p.success && p.removed) {
+                  itemActionsThisCall.push({
+                    action: "removed",
+                    name: p.removed.name,
+                    quantity: p.removed.quantity,
+                  });
+                }
+              } catch {
+                // ignorar
+              }
+            }
           } catch (err) {
             toolResult = {
               result: JSON.stringify({ error: (err as Error).message }),
@@ -836,6 +905,59 @@ export async function generateReply(
         ? replyMatch[1].replace(/\\n/g, "\n").replace(/\\"/g, '"')
         : reply,
     };
+  }
+
+  // SAFETY NET (bug real 2026-09-12): con un producto agotado y el cliente
+  // insistiendo varias veces, el LLM llegó a ejecutar addItem/removeItem de
+  // ciertos productos pero redactar en su respuesta que había anotado uno
+  // TOTALMENTE distinto (ej: el tool agregó "Galleta de Cheesecake de
+  // fresa" pero el texto le dijo al cliente "anoté Galleta de Nutella") —
+  // lo que el cliente cree que pidió no tenía nada que ver con lo que de
+  // verdad quedó guardado. Si ESTE turno agregó o quitó productos de
+  // verdad, exigimos que la respuesta mencione TODOS y cada uno — si falta
+  // alguno, no confiamos en el texto del LLM y lo reemplazamos por un
+  // resumen armado con los datos reales de los tools.
+  if (itemActionsThisCall.length > 0) {
+    const normalize = (s: string) =>
+      s
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[̀-ͯ]/g, "");
+    const normalizedReply = normalize(parsed.reply);
+    const GENERIC_WORDS = new Set(["galleta", "galletas", "leche", "de"]);
+    const isMentioned = (name: string) => {
+      const words = normalize(name)
+        .split(/\s+/)
+        .filter((w) => w.length >= 4 && !GENERIC_WORDS.has(w));
+      const keyword = words.sort((a, b) => b.length - a.length)[0];
+      return keyword
+        ? normalizedReply.includes(keyword)
+        : normalizedReply.includes(normalize(name));
+    };
+    const allMentioned = itemActionsThisCall.every((a) => isMentioned(a.name));
+    if (!allMentioned) {
+      console.warn(
+        `[openrouter] La respuesta del LLM no menciona todos los productos realmente agregados/quitados este turno (${itemActionsThisCall
+          .map((a) => `${a.action}:${a.name}x${a.quantity}`)
+          .join(", ")}) — reemplazando por resumen determinístico. Reply original: "${parsed.reply}"`,
+      );
+      const added = itemActionsThisCall.filter((a) => a.action === "added");
+      const removed = itemActionsThisCall.filter(
+        (a) => a.action === "removed",
+      );
+      const lines: string[] = [];
+      if (added.length > 0) {
+        lines.push("Anotado:");
+        for (const a of added) lines.push(`- ${a.quantity}x ${a.name}`);
+      }
+      if (removed.length > 0) {
+        if (lines.length > 0) lines.push("");
+        lines.push("Quité:");
+        for (const a of removed) lines.push(`- ${a.quantity}x ${a.name}`);
+      }
+      lines.push("", "¿Quiere algo más?");
+      parsed.reply = lines.join("\n");
+    }
   }
 
   // Overrides determinísticos: el resumen y la confirmación no dependen de
@@ -1258,6 +1380,41 @@ async function executeTool(
         (i: DraftItem) => i.name.toLowerCase() === product.name.toLowerCase(),
       );
       const inDraft = existing?.quantity ?? 0;
+
+      // SAFETY NET (bug real 2026-09-12): el LLM a veces vuelve a llamar
+      // addItem para un producto que YA quedó anotado con exactamente la
+      // cantidad que el cliente había pedido — típicamente al confirmar en
+      // un turno posterior algo que ya se agregó antes (ej: "sí también los
+      // 2 de pistacho" cuando esos 2 ya estaban anotados). addToDraft SUMA
+      // (nunca reemplaza el total), así que esa llamada de más duplicaba la
+      // cantidad en silencio — sin warning si había suficiente stock para
+      // absorber el duplicado.
+      //
+      // OJO — primera versión de este guard bloqueaba CUALQUIER llamada
+      // donde quantity === inDraft, sin mirar el mensaje. Eso rompía un caso
+      // real: cliente ya tenía 2 de un producto y pedía "2 más" (un pedido
+      // legítimo de más unidades que coincide en número por pura
+      // casualidad) — el guard lo bloqueaba en silencio, dejando al cliente
+      // con la mitad de lo que pidió. Verificado con pruebas antes de
+      // corregir. Por eso solo bloqueamos si el mensaje del cliente NO trae
+      // ninguna palabra que indique que quiere UNIDADES ADICIONALES — si la
+      // trae, confiamos en el incremento y lo sumamos normal.
+      const asksForMore =
+        !!ctx.lastCustomerMessage &&
+        /\b(mas|más|otro|otra|otros|otras|adicional|adicionales|aparte|extra|doble|triple)\b/i.test(
+          ctx.lastCustomerMessage,
+        );
+      if (inDraft > 0 && inDraft === quantity && !asksForMore) {
+        return {
+          result: JSON.stringify({
+            already_in_draft: true,
+            name: product.name,
+            quantity: inDraft,
+            note: `${product.name} ya está anotado con ${inDraft} unidades — no se sumó de nuevo para evitar duplicar. Si el cliente de verdad quiere MÁS unidades además de esas, llamá addItem otra vez pasando SOLO la cantidad ADICIONAL que pide (no el total).`,
+          }),
+        };
+      }
+
       const available = product.stock - inDraft;
       if (available <= 0) {
         return {
