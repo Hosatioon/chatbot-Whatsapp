@@ -16,7 +16,19 @@ function isPrivateOrLocalIp(ip: string): boolean {
   return false;
 }
 
-export async function assertSafeExternalUrl(rawUrl: string): Promise<void> {
+// Devuelve la IP ya validada (no privada/interna) a la que resuelve la URL.
+// BUG DE SEGURIDAD real encontrado (2026-09-14): `assertSafeExternalUrl`
+// hacía este mismo chequeo pero DESCARTABA la IP resuelta — quien la
+// llamaba (send.ts) validaba con ESTA IP y después le pedía a
+// `link-preview-js` que hiciera su propio fetch, que internamente vuelve a
+// resolver el dominio por su cuenta. Eso deja abierta una ventana de DNS
+// rebinding: un dominio controlado por un atacante puede responder una IP
+// pública en nuestro chequeo y, milisegundos después, una IP interna en el
+// fetch real de la librería — nuestra validación no protegía nada en ese
+// caso. Ahora devolvemos la IP validada para que el caller se la pase tal
+// cual a `resolveDNSHost` de link-preview-js y así fije el fetch a la
+// MISMA IP que ya revisamos, sin una segunda resolución de DNS.
+export async function resolveSafeExternalIp(rawUrl: string): Promise<string> {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -34,6 +46,11 @@ export async function assertSafeExternalUrl(rawUrl: string): Promise<void> {
   if (isPrivateOrLocalIp(address)) {
     throw new Error("No se permiten URLs a redes internas/privadas");
   }
+  return address;
+}
+
+export async function assertSafeExternalUrl(rawUrl: string): Promise<void> {
+  await resolveSafeExternalIp(rawUrl);
 }
 
 export async function isSafeExternalUrl(rawUrl: string): Promise<boolean> {
