@@ -7,7 +7,9 @@ services:
     volumes:
       - ./data/redis:/data
     ports:
-      - "6380:6379"
+      # Solo localhost: la net interna de docker conecta web/bot; exponer esto
+      # a 0.0.0.0 dejaba un Redis sin contraseña visible desde internet.
+      - "127.0.0.1:6380:6379"
 
   web:
     build:
