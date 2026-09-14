@@ -242,6 +242,16 @@ export function buildOrderSummaryForCustomer(state: ConversationState): string {
   if (state.draft_delivery_method === "domicilio") {
     lines.push(`- Domicilio: $${delivery.toLocaleString("es-CO")}`);
     lines.push(`Dirección: ${state.draft_address}`);
+    // Pedido explícito: que el cliente pueda verificar con sus propios ojos
+    // (Waze, Google Maps, el que abra) que el pin coincide con la dirección
+    // a la que quiere el domicilio, ANTES de confirmar. Solo se agrega si
+    // el domicilio se resolvió con coordenadas reales (GPS o geocodificado)
+    // — nunca inventamos un link sin lat/lng de verdad.
+    if (state.draft_lat != null && state.draft_lng != null) {
+      lines.push(
+        `Ubicación para verificar: https://www.google.com/maps?q=${state.draft_lat},${state.draft_lng}`,
+      );
+    }
   } else {
     lines.push("Entrega: recoge en tienda");
   }
