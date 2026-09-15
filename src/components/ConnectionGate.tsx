@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import type { ConversationListItem, Mode } from "@/lib/db";
 import QRScreen, { type StatusResponse } from "./QRScreen";
@@ -44,6 +44,15 @@ export default function ConnectionGate() {
     [],
   );
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  // BUG real encontrado (2026-09-15): el polling de conversaciones (cada
+  // 2s) auto-seleccionaba la primera conversación cada vez que selectedId
+  // era null — incluyendo cuando el usuario acababa de volver a la lista a
+  // propósito en mobile (botón "<"). El resultado: dabas "atrás" y en
+  // menos de 2 segundos el poll te metía otra vez al mismo chat, sin poder
+  // revisar los demás. Esta ref marca "el usuario salió a propósito, no
+  // reselecciones sola" — se prende en el botón atrás y se apaga en
+  // cualquier selección real (manual, cambio de tenant, reconexión).
+  const skipAutoSelectRef = useRef(false);
   const [view, setView] = useState<View>(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -108,6 +117,7 @@ export default function ConnectionGate() {
       setSelectedId((curr) => {
         if (curr && data.conversations.some((c) => c.id === curr)) return curr;
         if (view === "home") return null;
+        if (skipAutoSelectRef.current) return null;
         return data.conversations[0]?.id ?? null;
       });
     } catch {
@@ -123,6 +133,7 @@ export default function ConnectionGate() {
   }, [status, loadConversations, selectedTenantId]);
 
   const handleDeleted = () => {
+    skipAutoSelectRef.current = false;
     setSelectedId(null);
     void loadConversations();
   };
@@ -219,12 +230,14 @@ export default function ConnectionGate() {
           setQrPng(null);
           setPhone(null);
           setConversations([]);
+          skipAutoSelectRef.current = false;
           setSelectedId(null);
         }}
         selectedTenantId={selectedTenantId}
         onTenantChange={(id) => {
           setSelectedTenantId(id);
           setStoredTenantId(id);
+          skipAutoSelectRef.current = false;
           setSelectedId(null);
         }}
       />
@@ -459,7 +472,10 @@ export default function ConnectionGate() {
               <ConversationList
                 conversations={conversations}
                 selectedId={selectedId}
-                onSelect={setSelectedId}
+                onSelect={(id) => {
+                  skipAutoSelectRef.current = false;
+                  setSelectedId(id);
+                }}
               />
             </aside>
             <main
@@ -471,7 +487,10 @@ export default function ConnectionGate() {
                     conversationId={selectedId}
                     onDeleted={handleDeleted}
                     onModeChange={handleModeChange}
-                    onBack={() => setSelectedId(null)}
+                    onBack={() => {
+                      skipAutoSelectRef.current = true;
+                      setSelectedId(null);
+                    }}
                   />
                 </div>
               ) : (
