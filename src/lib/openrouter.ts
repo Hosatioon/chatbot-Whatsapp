@@ -993,7 +993,53 @@ export async function generateReply(
     // anterior..." — sonaba raro/robótico y dejaba al cliente confundido.
     // Forzamos la respuesta acá en vez de confiar en que el LLM redacte
     // bien la instrucción de "no lo menciones, solo seguí".
-    parsed.reply = "¿Transferencia o efectivo?";
+    //
+    // BUG real encontrado (2026-09-15): este override se disparaba SIEMPRE
+    // que la dirección era un known_place confirmado, aunque todavía
+    // faltara la referencia (torre/apto/casa) — pasaba directo a preguntar
+    // el pago sin pedirla nunca, para el mismo caso que este override
+    // existe para simplificar. Ahora respeta el mismo chequeo de detalle
+    // que las demás direcciones.
+    parsed.reply =
+      ctx?.conversationState &&
+      ctx.conversationState.draft_delivery_method === "domicilio" &&
+      !ctx.conversationState.draft_address_has_detail
+        ? "¿Alguna referencia para el domiciliario — torre, apartamento, piso, portería, o algún negocio/lugar conocido cerca?"
+        : "¿Transferencia o efectivo?";
+  } else if (
+    ctx?.conversationState &&
+    ctx.conversationState.draft_delivery_method === "domicilio" &&
+    ctx.conversationState.draft_address &&
+    !ctx.conversationState.draft_address_has_detail
+  ) {
+    // BUG real encontrado (2026-09-15): SIGUIENTE PASO ya le decía al LLM
+    // que pidiera la referencia (torre/apto/casa) antes de preguntar el
+    // pago cuando la dirección se resolvió sin ese dato — pero a veces el
+    // LLM preguntaba "¿transferencia o efectivo?" de una vez, ignorando la
+    // instrucción. No confiamos en que la obedezca: forzamos la pregunta
+    // acá. Si el ÚLTIMO mensaje del cliente ya suena a la respuesta de esa
+    // pregunta (una referencia real, o un "no tengo"), la guardamos
+    // nosotros mismos en vez de perderla o insistir con lo mismo.
+    const lastMsg = (ctx.lastCustomerMessage ?? "").trim();
+    const looksLikeNoReference =
+      /^(no|ninguna?|no\s*hay|nada|no\s*tengo|ya\s*est[áa]|as[ií]\s*est[áa]\s*bien)\.?$/i.test(
+        lastMsg,
+      );
+    const looksLikeDetail =
+      /\b(torre|apto|apartamento|casa|piso|porter[ií]a|bloque|interior|local|oficina|manzana|mz|lote|al\s+lado|frente|cerca)\b/i.test(
+        lastMsg,
+      );
+    if (looksLikeNoReference || looksLikeDetail) {
+      if (looksLikeDetail) {
+        ctx.conversationState.draft_address = `${ctx.conversationState.draft_address} — ${lastMsg}`;
+      }
+      ctx.conversationState.draft_address_has_detail = true;
+      saveState(ctx.conversationState);
+      parsed.reply = "¿Transferencia o efectivo?";
+    } else {
+      parsed.reply =
+        "¿Alguna referencia para el domiciliario — torre, apartamento, piso, portería, o algún negocio/lugar conocido cerca?";
+    }
   } else if (
     ctx?.conversationState &&
     ctx.conversationState.draft_items.length > 0 &&
@@ -1645,10 +1691,16 @@ async function executeTool(
           !isNegativeReply
         ) {
           s.draft_address = `${s.draft_address} — ${detailCandidate}`;
+          s.draft_address_has_detail = true;
           saveState(s);
           console.log(
             `[openrouter] setAddress: detalle agregado a dirección ya resuelta → "${s.draft_address}"`,
           );
+        } else if (isNegativeReply && !s.draft_address_has_detail) {
+          // El cliente dijo explícitamente que no tiene ninguna referencia
+          // — ya preguntamos, ya contestó, no insistir de nuevo cada turno.
+          s.draft_address_has_detail = true;
+          saveState(s);
         }
         console.log(
           `[openrouter] setAddress: dirección ya resuelta "${s.draft_address}", devolviendo estado actual`,
@@ -1771,6 +1823,11 @@ async function executeTool(
         s.draft_delivery_method = "domicilio";
         s.draft_lat = clientLatLng.lat;
         s.draft_lng = clientLatLng.lng;
+        // El cliente ya nos mandó su ubicación real — ya tiene el link,
+        // no hace falta devolvérselo en el resumen final (ver
+        // buildOrderSummaryForCustomer).
+        s.draft_address_source = "gps";
+        s.draft_address_has_detail = false;
         s.draft_delivery_price = deliveryPrice;
         computeStateFromDraft(s);
         saveState(s);
@@ -1887,6 +1944,11 @@ async function executeTool(
         s.draft_delivery_method = "domicilio";
         s.draft_lat = resolution.lat;
         s.draft_lng = resolution.lng;
+        // Resuelto a partir de texto (no de un pin real) — sí vale la pena
+        // mandarle el link en el resumen para que confirme que entendimos
+        // bien a dónde va el domicilio.
+        s.draft_address_source = "text";
+        s.draft_address_has_detail = !!resolution.details;
         s.draft_delivery_price = deliveryPrice;
         computeStateFromDraft(s);
         saveState(s);
@@ -1898,6 +1960,26 @@ async function executeTool(
         const skipConfirmation =
           resolution.source === "known_place" &&
           resolution.knownPlaceSource === "confirmed";
+        // BUG real encontrado (2026-09-15): cuando la dirección se resolvía
+        // de texto sin torre/apto/casa (ej: solo "conjunto boreal"), el bot
+        // pasaba derecho a preguntar el pago — nunca pedía la referencia
+        // para el domiciliario, aunque la regla general ya lo pedía en el
+        // prompt (no se aplicaba siempre). Ahora, si falta el detalle, la
+        // instrucción de ESTE turno ya lo pide explícitamente — y
+        // computeNextStep lo vuelve a exigir en los turnos siguientes
+        // mientras no se capture.
+        const askDetail =
+          '¿Alguna referencia para el domiciliario — torre, apartamento, piso, portería, o algún negocio/lugar conocido cerca?" Cuando el cliente responda (aunque sea "no" o "ninguna"), llamá setAddress de nuevo pasando ESA respuesta para guardarla. Recién ahí avanzá a preguntar el pago.';
+        let next: string;
+        if (skipConfirmation && resolution.details) {
+          next = "Preguntar método de pago: ¿Transferencia o efectivo?";
+        } else if (skipConfirmation) {
+          next = `Preguntar: "${askDetail}`;
+        } else if (resolution.details) {
+          next = `Confirmar con el cliente: "¿Es ${resolution.resolvedName}?" Si confirma, preguntar método de pago: ¿Transferencia o efectivo?`;
+        } else {
+          next = `Confirmar con el cliente: "¿Es ${resolution.resolvedName}?" Si confirma, preguntar: "${askDetail}`;
+        }
         return {
           result: JSON.stringify({
             success: true,
@@ -1906,9 +1988,7 @@ async function executeTool(
             distance_km: Number(km.toFixed(2)),
             delivery_price: deliveryPrice,
             skip_confirmation: skipConfirmation,
-            next: skipConfirmation
-              ? "Preguntar método de pago: ¿Transferencia o efectivo?"
-              : `Confirmar con el cliente: "¿Es ${resolution.resolvedName}?" Si confirma, preguntar método de pago: ¿Transferencia o efectivo?`,
+            next,
           }),
         };
       }
@@ -1950,6 +2030,11 @@ async function executeTool(
         s.draft_delivery_method = "domicilio";
         s.draft_lat = resolution.lat;
         s.draft_lng = resolution.lng;
+        s.draft_address_source = "text";
+        // La dirección guardada ya viene de un pedido anterior que se
+        // completó bien (con el detalle que hiciera falta en su momento) —
+        // no la volvemos a pedir salvo que esta vez sí venga una nueva.
+        s.draft_address_has_detail = true;
         s.draft_delivery_price = deliveryPrice;
         computeStateFromDraft(s);
         saveState(s);

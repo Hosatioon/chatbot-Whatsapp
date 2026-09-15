@@ -246,9 +246,14 @@ export function buildOrderSummaryForCustomer(state: ConversationState): string {
     // Pedido explícito: que el cliente pueda verificar con sus propios ojos
     // (Waze, Google Maps, el que abra) que el pin coincide con la dirección
     // a la que quiere el domicilio, ANTES de confirmar. Solo se agrega si
-    // el domicilio se resolvió con coordenadas reales (GPS o geocodificado)
-    // — nunca inventamos un link sin lat/lng de verdad.
-    if (state.draft_lat != null && state.draft_lng != null) {
+    // el domicilio se resolvió con coordenadas reales Y a partir de TEXTO
+    // — si el cliente ya nos mandó su propia ubicación GPS, ya tiene el
+    // link (es literalmente lo que él mandó), devolvérselo es redundante.
+    if (
+      state.draft_address_source !== "gps" &&
+      state.draft_lat != null &&
+      state.draft_lng != null
+    ) {
       lines.push(
         `Ubicación para verificar: https://www.google.com/maps?q=${state.draft_lat},${state.draft_lng}`,
       );
@@ -271,6 +276,23 @@ function computeNextStep(state?: ConversationState): string {
     return "Preguntar: ¿Es para domicilio o lo recoge en tienda?";
   if (state.draft_delivery_method === "domicilio" && !state.draft_address) {
     return "Pedirle PRIMERO que envíe su ubicación por WhatsApp (botón 📍) — solo si no puede, aceptar la dirección escrita. Ejemplo: '¿Me compartes tu ubicación por WhatsApp? (📎 → Ubicación). Si no puedes, también me sirve la dirección escrita'";
+  }
+  // BUG real encontrado (2026-09-15): tanto un pin de GPS como una
+  // dirección de texto corta ("conjunto boreal") pueden resolverse sin
+  // ningún dato de torre/apto/casa — el domiciliario llega al lugar
+  // correcto pero no sabe a qué puerta ir. La regla que pedía esto ya
+  // existía como texto suelto más abajo en el prompt, pero al no ser un
+  // chequeo del backend no se aplicaba siempre. Este SIGUIENTE PASO es
+  // obligatorio para el LLM, así que bloquea el avance al pago hasta que
+  // el flag draft_address_has_detail quede en true (lo pone en true
+  // setAddress cuando captura una referencia real, o cuando el cliente
+  // dice explícitamente que no tiene ninguna).
+  if (
+    state.draft_delivery_method === "domicilio" &&
+    state.draft_address &&
+    !state.draft_address_has_detail
+  ) {
+    return 'Antes de preguntar el pago, pedirle una referencia para el domiciliario: "¿Alguna referencia para el domiciliario — torre, apartamento, piso, portería, o algún negocio/lugar conocido cerca?" Cuando el cliente responda (aunque sea "no" o "ninguna"), llamá setAddress de nuevo pasando ESA respuesta tal cual para guardarla. NO preguntes el pago todavía.';
   }
   if (!state.draft_payment) {
     const done: string[] = ["Items ✓"];

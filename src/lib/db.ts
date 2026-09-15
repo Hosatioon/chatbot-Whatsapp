@@ -179,6 +179,22 @@ export interface ConversationState {
   draft_address: string | null;
   draft_lat: number | null;
   draft_lng: number | null;
+  // "gps" cuando la dirección vino de un pin de ubicación real que mandó
+  // el cliente (ya tiene el link, no hace falta devolvérselo en el
+  // resumen) vs "text" cuando la resolvimos nosotros a partir de texto
+  // (ahí sí vale la pena mandarle el link para que confirme que
+  // entendimos bien a dónde va el domicilio).
+  draft_address_source: "gps" | "text" | null;
+  // BUG real encontrado (2026-09-15): tanto un pin de GPS como una
+  // dirección de texto corta ("conjunto boreal") pueden resolverse sin
+  // ningún dato de torre/apto/casa — el domiciliario llega al lugar pero
+  // no sabe a qué puerta ir. La regla que le pedía esto al LLM existía en
+  // el prompt hace rato, pero como no era un chequeo del backend, no se
+  // aplicaba siempre. Este flag es la fuente de verdad: se pone en true
+  // solo cuando de verdad se capturó una referencia (torre/apto/casa/etc)
+  // o el cliente dijo explícitamente que no tiene ninguna — hasta que eso
+  // pase, el flujo no avanza a preguntar el pago.
+  draft_address_has_detail: boolean;
   draft_payment: string | null;
   updated_at: number;
 }
@@ -727,6 +743,16 @@ if (!columnExists("conversation_state", "draft_lat")) {
 if (!columnExists("conversation_state", "draft_lng")) {
   db.exec("ALTER TABLE conversation_state ADD COLUMN draft_lng REAL");
 }
+if (!columnExists("conversation_state", "draft_address_source")) {
+  db.exec(
+    "ALTER TABLE conversation_state ADD COLUMN draft_address_source TEXT",
+  );
+}
+if (!columnExists("conversation_state", "draft_address_has_detail")) {
+  db.exec(
+    "ALTER TABLE conversation_state ADD COLUMN draft_address_has_detail INTEGER NOT NULL DEFAULT 0",
+  );
+}
 if (!hasColumn("conversations", "real_phone")) {
   db.exec("ALTER TABLE conversations ADD COLUMN real_phone TEXT");
 }
@@ -1113,6 +1139,8 @@ const stmtGetConvState = db.prepare<
     draft_address: string | null;
     draft_lat: number | null;
     draft_lng: number | null;
+    draft_address_source: string | null;
+    draft_address_has_detail: number;
     draft_payment: string | null;
     updated_at: number;
   }
@@ -1135,6 +1163,9 @@ export function getConversationState(
       draft_address: row.draft_address,
       draft_lat: row.draft_lat ?? null,
       draft_lng: row.draft_lng ?? null,
+      draft_address_source:
+        (row.draft_address_source as "gps" | "text" | null) ?? null,
+      draft_address_has_detail: !!row.draft_address_has_detail,
       draft_payment: row.draft_payment,
       updated_at: row.updated_at,
     };
@@ -1151,6 +1182,8 @@ export function getConversationState(
     draft_address: null,
     draft_lat: null,
     draft_lng: null,
+    draft_address_source: null,
+    draft_address_has_detail: false,
     draft_payment: null,
     updated_at: Math.floor(Date.now() / 1000),
   };
@@ -1171,10 +1204,12 @@ const stmtUpsertConvState = db.prepare<
     number | null,
     number | null,
     string | null,
+    number,
+    string | null,
   ]
 >(
-  `INSERT INTO conversation_state (conversation_id, tenant_id, state, draft_items, draft_delivery_method, draft_delivery_zone, draft_delivery_price, draft_address, draft_lat, draft_lng, draft_payment, updated_at)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+  `INSERT INTO conversation_state (conversation_id, tenant_id, state, draft_items, draft_delivery_method, draft_delivery_zone, draft_delivery_price, draft_address, draft_lat, draft_lng, draft_address_source, draft_address_has_detail, draft_payment, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
    ON CONFLICT(conversation_id) DO UPDATE SET
      state = excluded.state,
      draft_items = excluded.draft_items,
@@ -1184,6 +1219,8 @@ const stmtUpsertConvState = db.prepare<
      draft_address = excluded.draft_address,
      draft_lat = excluded.draft_lat,
      draft_lng = excluded.draft_lng,
+     draft_address_source = excluded.draft_address_source,
+     draft_address_has_detail = excluded.draft_address_has_detail,
      draft_payment = excluded.draft_payment,
      updated_at = unixepoch()`,
 );
@@ -1200,6 +1237,8 @@ export function upsertConversationState(state: ConversationState): void {
     state.draft_address,
     state.draft_lat,
     state.draft_lng,
+    state.draft_address_source,
+    state.draft_address_has_detail ? 1 : 0,
     state.draft_payment,
   );
 }
