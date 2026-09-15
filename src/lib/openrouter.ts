@@ -1356,13 +1356,19 @@ async function executeTool(
       }
       const results = searchProducts(tenantId, pname, 1);
       if (results.length === 0) {
-        // No encontrado: devolver lista de productos disponibles para sugerir
-        const available = getTopProducts(tenantId, 20);
+        // BUG real encontrado (2026-09-15): esto mandaba hasta 20 productos
+        // como "sugerencia" — con un catálogo chico terminaba listando
+        // literalmente TODO lo que queda, y con un catálogo grande sería
+        // aún peor (imaginate un negocio con 1000 productos). El cliente ya
+        // recibió el link del catálogo completo al inicio de la
+        // conversación — no hace falta que el bot lo repita por texto. Acá
+        // solo va una muestra chica (5) para darle una idea rápida.
+        const available = getTopProducts(tenantId, 5);
         return {
           result: JSON.stringify({
             error: `Producto no encontrado: ${pname}`,
             available_products: available.map((p) => p.name),
-            hint: "Dile al cliente que no tenemos ese producto y ofrécele los de la lista available_products.",
+            hint: "Dile al cliente que no tenemos ese producto. Como máximo mencioná estas 5 opciones de available_products como ejemplo — NUNCA listes más de 5. Ya le mandaste el link del catálogo al inicio de la conversación, así que no hace falta enumerar todo lo que hay: si quiere ver más, que revise el catálogo.",
           }),
         };
       }
