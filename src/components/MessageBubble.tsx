@@ -29,8 +29,15 @@ export default function MessageBubble({ role, content, createdAt }: Props) {
   const label = isUser ? "Cliente" : isHuman ? "Humano" : "IA";
 
   return (
-    <div className={`flex animate-scale-in ${wrapper}`}>
-      <div className={`max-w-[75%] rounded-2xl px-3 py-2 shadow-sm ${bubble}`}>
+    // min-w-0 en toda la cadena: los mensajes del bot traen links de mapa
+    // largos y sin espacios — sin esto, esa URL fuerza el flex a medir más
+    // ancho que la pantalla y empuja las burbujas (y todo lo demás) fuera
+    // del viewport. break-all además parte la URL en cualquier punto si
+    // hace falta (break-words a veces no alcanza con un link tan largo).
+    <div className={`flex min-w-0 animate-scale-in ${wrapper}`}>
+      <div
+        className={`max-w-[75%] min-w-0 rounded-2xl px-3 py-2 shadow-sm ${bubble}`}
+      >
         <div className="mb-0.5 text-[10px] uppercase tracking-wider text-gray-500">
           {label}
         </div>

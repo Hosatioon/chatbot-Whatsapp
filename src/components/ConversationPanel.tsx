@@ -105,9 +105,13 @@ export default function ConversationPanel({
   const isHuman = conversation.mode === "HUMAN";
 
   return (
-    <div className="flex h-full flex-col">
+    // min-w-0: sin esto, un mensaje con una URL larga (los links de mapa que
+    // manda el bot) puede forzar este flex-col a medir más ancho que la
+    // pantalla — el navbar de arriba (con Modo/Borrar) y las burbujas de la
+    // derecha terminaban empujadas fuera del viewport visible.
+    <div className="flex h-full min-w-0 flex-col">
       {/* Header */}
-      <header className="flex items-center justify-between gap-3 border-b border-gray-200 bg-white px-4 py-3">
+      <header className="flex min-w-0 items-center justify-between gap-3 border-b border-gray-200 bg-white px-4 py-3">
         <div className="flex min-w-0 items-center gap-2">
           {onBack && (
             <button
@@ -180,7 +184,7 @@ export default function ConversationPanel({
       {/* Mensajes */}
       <div
         ref={scrollRef}
-        className="flex-1 space-y-2 overflow-y-auto bg-gray-50 p-4"
+        className="min-w-0 flex-1 space-y-2 overflow-y-auto bg-gray-50 p-4"
       >
         {messages.length === 0 ? (
           <div className="py-8 text-center text-sm text-gray-500">

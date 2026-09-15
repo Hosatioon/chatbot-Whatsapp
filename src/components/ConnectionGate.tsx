@@ -241,7 +241,11 @@ export default function ConnectionGate() {
           setSelectedId(null);
         }}
       />
-      <nav className="flex items-center gap-1 overflow-x-auto border-b border-gray-200 bg-white px-3 py-2 sm:px-6">
+      {/* En mobile cada tab ocupa una porción igual de TODO el ancho —
+          blanco táctil grande, fácil de acertar con el dedo, como una
+          bottom-nav real. Desde sm+ vuelve al tamaño ajustado al
+          contenido, empacado a la izquierda (así queda en PC). */}
+      <nav className="flex items-stretch border-b border-gray-200 bg-white sm:items-center sm:gap-1 sm:overflow-x-auto sm:px-6 sm:py-2">
         {TABS.map((tab) => {
           const isActive = view === tab.key;
           return (
@@ -249,14 +253,14 @@ export default function ConnectionGate() {
               key={tab.key}
               onClick={() => setView(tab.key)}
               title={tab.label}
-              className={`flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-medium transition-all duration-200 sm:px-3 ${
+              className={`flex flex-1 flex-col items-center justify-center gap-1 py-2.5 text-[11px] font-medium transition-all duration-200 sm:flex-none sm:flex-row sm:gap-1.5 sm:rounded-lg sm:px-3 sm:py-1.5 sm:text-sm ${
                 isActive
-                  ? "bg-slate-900 text-white shadow-sm"
+                  ? "bg-slate-900 text-white shadow-sm sm:bg-slate-900"
                   : "text-gray-600 hover:bg-gray-100 hover:text-slate-900"
               }`}
             >
               <svg
-                className="h-4 w-4 shrink-0"
+                className="h-5 w-5 shrink-0 sm:h-4 sm:w-4"
                 fill="none"
                 stroke="currentColor"
                 strokeWidth={1.8}
@@ -268,6 +272,9 @@ export default function ConnectionGate() {
                   d={TAB_ICONS[tab.key]}
                 />
               </svg>
+              <span className="max-w-full truncate px-0.5 sm:hidden">
+                {tab.label}
+              </span>
               <span className="hidden sm:inline">{tab.label}</span>
             </button>
           );
@@ -479,10 +486,10 @@ export default function ConnectionGate() {
               />
             </aside>
             <main
-              className={`${selectedId ? "block" : "hidden md:block"} flex-1 bg-gray-50`}
+              className={`${selectedId ? "block" : "hidden md:block"} min-w-0 flex-1 bg-gray-50`}
             >
               {selectedId ? (
-                <div key={selectedId} className="animate-fade-in h-full">
+                <div key={selectedId} className="animate-fade-in h-full min-w-0">
                   <ConversationPanel
                     conversationId={selectedId}
                     onDeleted={handleDeleted}
