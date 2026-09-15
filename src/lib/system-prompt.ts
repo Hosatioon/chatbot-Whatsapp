@@ -280,7 +280,17 @@ function computeNextStep(state?: ConversationState): string {
     return `YA completado: ${done.join(", ")}. NO volver a preguntar entrega ni dirección. Preguntar SOLO: ¿Transferencia o efectivo?`;
   }
   const summary = buildOrderSummaryForCustomer(state);
-  return `El pedido está completo. Si el último mensaje del cliente es una confirmación (sí, confirmo, está bien, perfecto, dale, listo) y YA enviaste el resumen, llamar confirmOrder() AHORA sin repetir nada. Si aún NO has enviado el resumen, enviarlo copiando EXACTAMENTE este texto (sin agregar ni quitar nada) seguido de "¿Confirma el pedido?":\n${summary}`;
+  // BUG real encontrado (2026-09-15): un cliente dejó el pedido listo para
+  // confirmar y volvió un día después con un simple "Hola buenas" — como el
+  // resumen YA estaba en el historial y ese saludo no era ni sí ni no, el
+  // LLM no sabía qué hacer y terminó saludando de cero, como si no hubiera
+  // nada pendiente. El cliente nunca vio que le estaban recordando su
+  // pedido. Por eso ahora el CUALQUIER OTRO CASO reenvía el resumen
+  // siempre — no solo la primera vez — para que un pedido pendiente jamás
+  // se sienta ignorado ni se pierda en un saludo genérico.
+  return `El pedido está completo. Reglas, en este orden:
+1) Si el último mensaje del cliente es una confirmación (sí, confirmo, está bien, perfecto, dale, listo): llamar confirmOrder() AHORA, sin repetir nada.
+2) En CUALQUIER OTRO CASO — incluso si ya mandaste este resumen antes, o el cliente solo saludó, preguntó otra cosa, o escribió algo que no es ni un sí ni un no —: el cliente tiene un pedido pendiente sin confirmar y hay que recordárselo. Mandá el resumen copiando EXACTAMENTE este texto (sin agregar ni quitar nada) seguido de "¿Confirma el pedido?". NUNCA respondas con un saludo genérico como si no hubiera nada pendiente — el cliente ya llegó hasta acá, no lo hagas empezar de cero.\n${summary}`;
 }
 
 function formatDraftForPrompt(state: ConversationState): string {

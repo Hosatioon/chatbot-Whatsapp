@@ -683,6 +683,19 @@ async function handleSingleMessage(
     }
   }
 
+  // PEDIDO real del negocio (2026-09-15): la pregunta "¿Confirma el
+  // pedido?" venía pegada al final del resumen largo — mucha gente no lee
+  // bloques de texto completos y se salta justo la parte donde le están
+  // preguntando algo. Separarla en su propio mensaje hace que salte a la
+  // vista que el bot está esperando una respuesta, como haría una persona
+  // real (manda el resumen, y en un mensaje aparte pregunta "¿confirmas?").
+  const CONFIRM_SUFFIX = /\s*¿Confirma el pedido\?\s*$/;
+  let confirmFollowUp: string | null = null;
+  if (CONFIRM_SUFFIX.test(llmResponse.reply)) {
+    llmResponse.reply = llmResponse.reply.replace(CONFIRM_SUFFIX, "");
+    confirmFollowUp = "¿Confirmas para agendar tu pedido? 😊";
+  }
+
   insertMessage(convo.id, "assistant", llmResponse.reply);
 
   // Delay aleatorio 1-3s para parecer más humano y evitar detección
@@ -694,6 +707,17 @@ async function handleSingleMessage(
     console.log(`[bot] → Enviado a ${phone}`);
   } catch (err) {
     console.error(`[bot] Error enviando a ${phone}:`, err);
+  }
+
+  if (confirmFollowUp) {
+    await humanDelay(700, 1500);
+    try {
+      await sendTextWithSafePreview(sock, remoteJid, confirmFollowUp);
+      insertMessage(convo.id, "assistant", confirmFollowUp);
+      console.log(`[bot] → Pregunta de confirmación enviada a ${phone}`);
+    } catch (err) {
+      console.error(`[bot] Error enviando confirmación a ${phone}:`, err);
+    }
   }
 
   // Si es primera interacción y no hubo saludo programático,

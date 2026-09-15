@@ -365,7 +365,20 @@ export function getStateForConversation(
     state.draft_payment ||
     state.draft_delivery_method ||
     state.draft_address;
-  if (hasDraftData && now - state.updated_at > ttlMinutes * 60) {
+  // BUG real encontrado (2026-09-15): un pedido que YA está completo y
+  // listo para confirmar (WAITING_CONFIRMATION) se borraba solo pasado el
+  // TTL como cualquier otro draft abandonado a medias — un cliente que se
+  // demoró un día en decir "sí" volvió y encontró todo vacío, sin ningún
+  // aviso. Un draft a medias (el cliente nunca terminó de elegir
+  // entrega/dirección/pago) sí tiene sentido resetearlo solo — probablemente
+  // no vuelva a esa idea. Pero uno que ya llegó al resumen final merece que
+  // se le recuerde, no que desaparezca en silencio.
+  const isWaitingConfirmation = state.state === "WAITING_CONFIRMATION";
+  if (
+    hasDraftData &&
+    !isWaitingConfirmation &&
+    now - state.updated_at > ttlMinutes * 60
+  ) {
     console.log(
       `[state] Draft de conversación ${conversationId} expirado (${ttlMinutes}min), reseteando`,
     );
