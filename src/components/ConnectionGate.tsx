@@ -170,7 +170,16 @@ export default function ConnectionGate() {
       ];
 
   return (
-    <div className="flex h-screen flex-col">
+    // BUG real encontrado (2026-09-15): `h-screen` (100vh) en un layout
+    // hijo de un <body> con `min-h-screen` se ve mal en el navegador móvil
+    // — 100vh no descuenta la barra de direcciones, así que el shell mide
+    // más que el área visible real y el body (que sí puede crecer, por el
+    // min-height) deja hacer scroll de TODA la página para alcanzar lo que
+    // "sobra" abajo. `fixed inset-0` fija este shell al viewport visual
+    // real del navegador, sin importar el body — nunca hace falta mover la
+    // pantalla completa; solo las listas internas (chats, mensajes)
+    // scrollean, como en WhatsApp Web.
+    <div className="fixed inset-0 flex flex-col overflow-hidden">
       {botDisconnected && isSuperAdmin && (
         <div className="animate-slide-down flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 sm:flex-nowrap sm:px-6">
           <svg
