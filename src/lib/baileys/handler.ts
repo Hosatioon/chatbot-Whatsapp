@@ -19,7 +19,7 @@ import {
   isMessageProcessed,
   markMessageProcessed,
   purgeOldProcessedMessages,
-  findConversationByRealPhone,
+  findConversationByPhoneSuffix,
   searchProducts,
 } from "../db";
 import { generateReply, type LLMResponse } from "../openrouter";
@@ -275,8 +275,40 @@ async function handleSingleMessage(
     return;
   }
 
-  // === Check de bot pausado (programático, sin IA, prioridad sobre horarios) ===
+  // === Check de número de notificaciones del admin (programático, prioridad
+  // sobre todo lo demás) — este número no es un cliente, es a donde le
+  // llegan los avisos de pedido nuevo. No debe recibir saludo, catálogo, ni
+  // el flujo de IA. admin_phone se guarda tal cual lo escribe el dueño en el
+  // panel (normalmente SIN indicativo de país, ej. "3217780643"), mientras
+  // que "phone"/"realPhone" vienen del JID de WhatsApp CON indicativo (ej.
+  // "573217780643") — por eso comparamos por sufijo, no por igualdad exacta.
   const tenant = getTenantById(tenantId);
+  const normalizedAdminPhone = tenant?.admin_phone?.replace(/[^\d]/g, "") ?? "";
+  const isAdminNotifNumber =
+    normalizedAdminPhone.length >= 7 &&
+    (phone === normalizedAdminPhone ||
+      phone.endsWith(normalizedAdminPhone) ||
+      (realPhone != null && realPhone.endsWith(normalizedAdminPhone)));
+  if (isAdminNotifNumber) {
+    const adminInfoMsg =
+      "📌 Este número está configurado para recibir las notificaciones de pedidos del negocio, no es el chat de atención a clientes.";
+    insertMessage(convo.id, "assistant", adminInfoMsg);
+    await humanDelay(500, 1200);
+    try {
+      await sendTextWithSafePreview(sock, remoteJid, adminInfoMsg);
+      console.log(
+        `[bot:${tenantId}] → Mensaje informativo enviado al número de notificaciones ${phone}`,
+      );
+    } catch (e) {
+      console.error(
+        `[bot] Error enviando mensaje al número de notificaciones:`,
+        e,
+      );
+    }
+    return;
+  }
+
+  // === Check de bot pausado (programático, sin IA, prioridad sobre horarios) ===
   if (tenant?.bot_paused) {
     const pausedMsg =
       tenant.paused_message ||
@@ -472,8 +504,14 @@ async function handleSingleMessage(
         const adminPhone = tenant?.admin_phone?.trim();
         if (adminPhone) {
           const normalizedAdminPhone = adminPhone.replace(/[^\d]/g, "");
-          // Buscar conversación exacta del admin por teléfono real
-          const adminConvo = findConversationByRealPhone(
+          // Buscar la conversación del admin por sufijo, no por igualdad
+          // exacta: admin_phone se guarda tal cual lo escribe el dueño
+          // (normalmente SIN indicativo de país, ej. "3217780643"), mientras
+          // que el real_phone guardado en la conversación viene del JID de
+          // WhatsApp CON indicativo (ej. "573217780643"). Con igualdad
+          // exacta esto nunca hacía match y la notificación se perdía en
+          // silencio (bug real encontrado 2026-09-15, ver commit).
+          const adminConvo = findConversationByPhoneSuffix(
             tenantId,
             normalizedAdminPhone,
           );
@@ -494,7 +532,7 @@ async function handleSingleMessage(
               enqueueOutbox(
                 tenantId,
                 adminConvo.id,
-                normalizedAdminPhone,
+                adminConvo.phone,
                 adminMsg,
                 adminConvo.jid,
               );
