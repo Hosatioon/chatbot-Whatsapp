@@ -1297,17 +1297,32 @@ async function executeTool(
 ): Promise<ToolResult> {
   switch (name) {
     case "searchProducts": {
+      // BUG real encontrado (2026-09-16, cliente "Caro"): una búsqueda
+      // amplia como "galleta" devolvía hasta 10 resultados y el LLM los
+      // listaba TODOS por texto en su respuesta — el mismo problema que ya
+      // habíamos arreglado para "producto no encontrado" (addItem), pero
+      // acá el LLM llega a los productos por otra ruta (una pregunta de
+      // disponibilidad, no un intento de agregar algo). No confiamos en que
+      // la regla del prompt sola baste: recortamos acá mismo lo que la tool
+      // le puede devolver, así aunque el LLM "quiera" listarlos todos, no
+      // tiene de dónde sacar más de 5.
       const query = String(args.query ?? "");
-      const results = searchProducts(tenantId, query, 10);
+      const allResults = searchProducts(tenantId, query, 20);
+      const results = allResults.slice(0, 5);
       return {
-        result: JSON.stringify(
-          results.map((p) => ({
+        result: JSON.stringify({
+          products: results.map((p) => ({
             name: p.name,
             price: p.price,
             stock: p.stock,
             description: p.description,
           })),
-        ),
+          ...(allResults.length > results.length
+            ? {
+                note: `Hay ${allResults.length} productos que coinciden, pero solo se muestran ${results.length}. Mencioná COMO MÁXIMO estos ${results.length} en tu respuesta — para el resto, recordale al cliente que ya tiene el link del catálogo.`,
+              }
+            : {}),
+        }),
       };
     }
     case "getProduct": {
