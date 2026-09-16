@@ -91,13 +91,50 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [botPhone, setBotPhone] = useState<string | null>(null);
+  const [adminActivated, setAdminActivated] = useState<boolean | null>(null);
 
   const tenantQs = selectedTenantId > 0 ? `?tenantId=${selectedTenantId}` : "";
 
   useEffect(() => {
     void loadConfig();
+    void loadBotPhone();
+    void loadAdminActivationStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTenantId]);
+
+  async function loadBotPhone() {
+    try {
+      const res = await fetch(`/api/connection/status${tenantQs}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { status?: string; phone?: string };
+      if (data.status === "connected" && data.phone) setBotPhone(data.phone);
+      else setBotPhone(null);
+    } catch {
+      setBotPhone(null);
+    }
+  }
+
+  // Consulta si el número admin_phone ya "activó" las notificaciones (ya
+  // escribió al menos una vez al bot) — así el panel puede mostrar un
+  // check en vez de dejar al dueño adivinando si ya funciona o no.
+  async function loadAdminActivationStatus() {
+    try {
+      const res = await fetch(`/api/tenant/admin-notify-status${tenantQs}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        configured?: boolean;
+        activated?: boolean;
+      };
+      setAdminActivated(data.configured ? (data.activated ?? false) : null);
+    } catch {
+      setAdminActivated(null);
+    }
+  }
 
   async function loadConfig() {
     setLoading(true);
@@ -159,6 +196,9 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
       }
       // Recargar para confirmar que se guardó
       await loadConfig();
+      // El admin_phone pudo haber cambiado — la activación es por número,
+      // así que hay que volver a chequear con el nuevo valor.
+      void loadAdminActivationStatus();
       setSaved(true);
       setTimeout(() => setSaved(false), 4000);
     } catch {
@@ -739,12 +779,41 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
                 Número que recibe una notificación por WhatsApp cada vez que
                 entra un pedido nuevo. Puede ser el mismo número del bot u otro.
               </p>
-              <div className="mt-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
-                <strong>⚠️ Activación requerida:</strong> Para que las
-                notificaciones funcionen, enviá un mensaje (ej: "hola") desde
-                este número al bot. Esto evita que WhatsApp detecte mensajes no
-                solicitados.
-              </div>
+              {config.admin_phone && adminActivated === true && (
+                <div className="mt-2 rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-xs text-green-800">
+                  ✅ <strong>Activado.</strong> Este número ya puede recibir
+                  notificaciones de pedidos nuevos.
+                </div>
+              )}
+              {config.admin_phone && adminActivated === false && (
+                <div className="mt-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+                  <strong>⚠️ Falta activar.</strong> Para que las
+                  notificaciones lleguen, este número tiene que escribirle
+                  primero al bot (así evitamos que WhatsApp lo vea como un
+                  mensaje no solicitado). Tocá el botón — abre WhatsApp con el
+                  mensaje ya listo, solo hay que darle enviar desde{" "}
+                  <strong>{config.admin_phone}</strong>.
+                  {botPhone ? (
+                    <div>
+                      <a
+                        href={`https://wa.me/${botPhone}?text=${encodeURIComponent(
+                          "Hola, quiero activar las notificaciones de pedidos 🔔",
+                        )}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-green-600 px-3 py-1.5 font-medium text-white hover:bg-green-700"
+                      >
+                        💬 Activar por WhatsApp
+                      </a>
+                    </div>
+                  ) : (
+                    <p className="mt-1.5 text-amber-700">
+                      (El bot todavía no está conectado — conectalo primero
+                      para poder generar el enlace de activación.)
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </section>
