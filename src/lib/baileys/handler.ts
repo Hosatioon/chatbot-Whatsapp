@@ -23,6 +23,7 @@ import {
   searchProducts,
 } from "../db";
 import { generateReply, type LLMResponse } from "../openrouter";
+import { sendPushToTenant } from "../push";
 import { sendTextWithSafePreview } from "./send";
 import { checkAndRecord } from "../rate-limit";
 import { debounceMessage, hasPendingDebounce } from "../debounce";
@@ -265,6 +266,20 @@ async function handleSingleMessage(
   // Por privacidad: no loguear el texto completo. Solo metadatos.
   console.log(`[bot:${tenantId}] ← Mensaje de ${phone} (${text.length} chars)`);
   insertMessage(convo.id, "user", text);
+
+  // Push a los dispositivos del panel (PC/celular) — no depende de si la
+  // conversación está en modo IA o Humano, porque justamente en modo
+  // Humano es cuando más falta hace que alguien se entere de que el
+  // cliente escribió (bug real encontrado 2026-09-16: una conversación se
+  // quedó en modo Humano sin que nadie contestara por una hora). No se
+  // espera esta llamada ni se deja que una falla acá frene el flujo del
+  // bot — es solo una notificación de cortesía.
+  void sendPushToTenant(tenantId, {
+    title: `💬 ${pushName || phone}`,
+    body: text.length > 120 ? `${text.slice(0, 117)}...` : text,
+    tag: `convo-${convo.id}`,
+    url: "/?view=chats",
+  }).catch((e) => console.error("[bot] Error mandando push:", e));
 
   // Re-leer por si el toggle cambió entre creación y este punto
   const fresh = getConversationById(convo.id, tenantId);
@@ -556,6 +571,17 @@ async function handleSingleMessage(
           notifErr,
         );
       }
+
+      // Push del pedido nuevo a los dispositivos del panel — a diferencia
+      // del aviso por WhatsApp, este no depende de admin_phone ni de haber
+      // "activado" nada: cualquiera que tenga el panel abierto y haya
+      // aceptado notificaciones en ese dispositivo se entera.
+      void sendPushToTenant(tenantId, {
+        title: `🔔 Nuevo pedido #${result.confirmedOrderId}`,
+        body: `${pushName || phone} — $${total.toLocaleString("es-CO")}`,
+        tag: `order-${result.confirmedOrderId}`,
+        url: "/?view=orders",
+      }).catch((e) => console.error("[bot] Error mandando push de pedido:", e));
 
       // Limpiar estado
       resetState(convo.id);

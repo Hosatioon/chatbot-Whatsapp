@@ -11,6 +11,7 @@ import ProductsPanel from "./ProductsPanel";
 import OrdersPanel from "./OrdersPanel";
 import ConfigPanel from "./ConfigPanel";
 import OperationsCenter from "./OperationsCenter";
+import PushNotificationSetup from "./PushNotificationSetup";
 
 type Status = "disconnected" | "qr" | "connecting" | "connected";
 type View = "home" | "chats" | "products" | "orders" | "config" | "ops";
@@ -191,6 +192,7 @@ export default function ConnectionGate() {
     // pantalla completa; solo las listas internas (chats, mensajes)
     // scrollean, como en WhatsApp Web.
     <div className="fixed inset-0 flex flex-col overflow-hidden">
+      <PushNotificationSetup />
       {botDisconnected && isSuperAdmin && (
         <div className="animate-slide-down flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 sm:flex-nowrap sm:px-6">
           <svg

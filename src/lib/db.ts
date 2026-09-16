@@ -379,6 +379,22 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+  -- Suscripciones de notificaciones push del navegador (Web Push): una fila
+  -- por cada dispositivo/navegador donde alguien del negocio inició sesión y
+  -- aceptó recibir notificaciones. endpoint es único por dispositivo/perfil
+  -- de navegador (lo asigna el servicio de push del navegador), p256dh/auth
+  -- son las llaves de cifrado que exige el estándar Web Push.
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL,
+    endpoint TEXT NOT NULL UNIQUE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_push_subs_tenant ON push_subscriptions(tenant_id);
 `);
 
 // Migración idempotente: agregar columna `jid` a conversations y
@@ -1354,6 +1370,60 @@ const stmtMarkOutboxSent = db.prepare<[number]>(
 
 export function markOutboxSent(id: number): void {
   stmtMarkOutboxSent.run(id);
+}
+
+// ---------------------------------------------------------------------------
+// Push subscriptions (notificaciones del navegador)
+// ---------------------------------------------------------------------------
+
+export interface PushSubscriptionRow {
+  id: number;
+  tenant_id: number;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  created_at: number;
+}
+
+const stmtUpsertPushSub = db.prepare<
+  [number, string, string, string]
+>(
+  `INSERT INTO push_subscriptions (tenant_id, endpoint, p256dh, auth)
+   VALUES (?, ?, ?, ?)
+   ON CONFLICT(endpoint) DO UPDATE SET
+     tenant_id = excluded.tenant_id,
+     p256dh = excluded.p256dh,
+     auth = excluded.auth`,
+);
+
+// Un mismo endpoint (dispositivo/perfil de navegador) solo puede pertenecer
+// a un tenant a la vez — si alguien cambia de negocio con el mismo
+// navegador, el upsert por endpoint reasigna la suscripción sola.
+export function savePushSubscription(
+  tenantId: number,
+  endpoint: string,
+  p256dh: string,
+  auth: string,
+): void {
+  stmtUpsertPushSub.run(tenantId, endpoint, p256dh, auth);
+}
+
+const stmtDeletePushSub = db.prepare<[string]>(
+  "DELETE FROM push_subscriptions WHERE endpoint = ?",
+);
+
+export function deletePushSubscription(endpoint: string): void {
+  stmtDeletePushSub.run(endpoint);
+}
+
+const stmtPushSubsForTenant = db.prepare<[number], PushSubscriptionRow>(
+  "SELECT * FROM push_subscriptions WHERE tenant_id = ?",
+);
+
+export function getPushSubscriptionsForTenant(
+  tenantId: number,
+): PushSubscriptionRow[] {
+  return stmtPushSubsForTenant.all(tenantId);
 }
 
 // ---------------------------------------------------------------------------
