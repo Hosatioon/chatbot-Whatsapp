@@ -66,11 +66,13 @@ function beep(
   freq: number,
   startTime: number,
   duration: number,
-  volume = 0.15,
+  volume = 0.35,
 ) {
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
-  osc.type = "sine";
+  // "triangle" en vez de "sine": a mismo volumen se percibe más presente
+  // (más armónicos) sin llegar a sonar áspero como "square".
+  osc.type = "triangle";
   osc.frequency.value = freq;
   gain.gain.setValueAtTime(0, startTime);
   gain.gain.linearRampToValueAtTime(volume, startTime + 0.01);
@@ -103,12 +105,15 @@ export async function playNotificationSound(
   const now = ctx.currentTime;
 
   if (id === "ping") {
-    beep(ctx, 880, now, 0.18);
+    // Doble beep en vez de uno solo — mucho más notorio que un tono único,
+    // que reportaron que pasaba desapercibido.
+    beep(ctx, 880, now, 0.15, 0.4);
+    beep(ctx, 880, now + 0.18, 0.2, 0.4);
   } else if (id === "chime") {
-    beep(ctx, 660, now, 0.15, 0.12);
-    beep(ctx, 990, now + 0.12, 0.2, 0.12);
+    beep(ctx, 660, now, 0.15, 0.35);
+    beep(ctx, 990, now + 0.12, 0.22, 0.35);
   } else if (id === "pop") {
-    beep(ctx, 520, now, 0.08, 0.18);
+    beep(ctx, 520, now, 0.1, 0.4);
   }
   return true;
 }
