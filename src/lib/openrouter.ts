@@ -1713,20 +1713,44 @@ async function executeTool(
             ? lastCustomerMsg
             : trimmedInput;
         const looksLikeNewLink = /https?:\/\//i.test(detailCandidate);
-        const alreadyIncluded = s.draft_address
-          .toLowerCase()
-          .includes(detailCandidate.toLowerCase());
+
+        // BUG real encontrado (2026-09-17, durante una prueba de modelo): a
+        // veces el LLM vuelve a llamar setAddress con la dirección YA
+        // guardada más el detalle nuevo pegado (ej. guardado "Conjunto
+        // Boreal, torre 2" y el LLM manda "Conjunto Boreal, torre 2, apt
+        // 804"), en vez de mandar solo el detalle nuevo ("apt 804"). El
+        // chequeo de "ya incluido" comparaba en un solo sentido (¿lo
+        // guardado ya contiene el candidato?) — como el candidato acá es
+        // MÁS LARGO que lo guardado, nunca puede estar "incluido" en ese
+        // sentido, así que se pegaba el candidato COMPLETO como si fuera
+        // todo nuevo, duplicando el prefijo en el resumen del pedido
+        // ("Conjunto Boreal, torre 2 — Conjunto Boreal, torre 2, apt 804").
+        // Ahora se chequean los dos sentidos: si el candidato ya contiene lo
+        // guardado, nos quedamos solo con lo que sobra después de ese
+        // prefijo.
+        const savedLower = s.draft_address.toLowerCase();
+        const candidateLower = detailCandidate.toLowerCase();
+        let newDetailOnly = detailCandidate;
+        if (candidateLower.includes(savedLower)) {
+          const idx = candidateLower.indexOf(savedLower);
+          newDetailOnly = detailCandidate
+            .slice(idx + s.draft_address.length)
+            .replace(/^[\s,.\-—]+/, "")
+            .trim();
+        }
+        const alreadyIncluded =
+          savedLower.includes(candidateLower) || newDetailOnly.length === 0;
         const isNegativeReply =
           /^(no|ninguna?|no\s*hay|nada|no\s*tengo|as[ií]\s*est[áa]\s*bien|ya\s*est[áa])\.?$/i.test(
-            detailCandidate,
+            newDetailOnly,
           );
         if (
-          detailCandidate.length > 0 &&
+          newDetailOnly.length > 0 &&
           !looksLikeNewLink &&
           !alreadyIncluded &&
           !isNegativeReply
         ) {
-          s.draft_address = `${s.draft_address} — ${detailCandidate}`;
+          s.draft_address = `${s.draft_address} — ${newDetailOnly}`;
           s.draft_address_has_detail = true;
           saveState(s);
           console.log(
