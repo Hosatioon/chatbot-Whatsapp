@@ -21,6 +21,7 @@ import {
   purgeOldProcessedMessages,
   findConversationByPhoneSuffix,
   searchProducts,
+  getOrderById,
 } from "../db";
 import { generateReply, type LLMResponse } from "../openrouter";
 import { buildOrderSummaryForCustomer } from "../system-prompt";
@@ -487,10 +488,18 @@ async function handleSingleMessage(
 
     // Si el LLM confirmó el pedido via tool, enviar confirmación + notificar admin
     if (result.orderConfirmed && result.confirmedOrderId) {
-      const subtotal = computeDraftTotal(convState.draft_items);
-      const deliveryPrice =
-        convState.draft_delivery_price ?? tenant?.delivery_price ?? 0;
-      const total = subtotal + deliveryPrice;
+      // BUG real encontrado (2026-09-17): calcular el total desde
+      // convState acá se veía bien en teoría, pero para este punto del
+      // código confirmOrder YA vació el draft (items, precio de domicilio)
+      // dentro de generateReply, antes de que este bloque se ejecute — el
+      // mismo objeto de estado, ya limpio. Eso daba subtotal=0 y
+      // deliveryPrice caía al fallback fijo del tenant (ej. $5.000),
+      // colando ese número en la notificación al admin y en el push —
+      // pasó justo con el pedido #60 (total real $43.100, notificación
+      // mostró $5.000). La fuente de verdad real es la orden ya creada en
+      // la BD, no el draft (que para esto ya es historia vieja).
+      const confirmedOrder = getOrderById(tenantId, result.confirmedOrderId);
+      const total = confirmedOrder?.total_amount ?? 0;
       const paymentInfo = tenant?.payment_info || "";
       let confirmMsg: string;
       if (convState.draft_payment === "efectivo") {
