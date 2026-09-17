@@ -1095,7 +1095,21 @@ export async function generateReply(
       r.includes("domicilio o recoge") ||
       r.includes("recoge en tienda");
 
-    if ((wantsDomicilio || wantsRecoger) && !isAlreadyAskingMethod) {
+    // BUG real encontrado (2026-09-17): "isAlreadyAskingMethod" existe para
+    // no pisar una pregunta legítima del LLM cuando la señal de domicilio es
+    // ambigua (una palabra suelta como "envien"). Pero cuando la señal es
+    // wantsDomicilioByAddressPattern — el cliente literalmente dio una
+    // referencia de torre/apto — es tan fuerte que NUNCA hay que dejar que
+    // el LLM se quede preguntando "¿domicilio o recoge?" en su lugar: eso
+    // es exactamente el bug que este safety net existe para arreglar. Sin
+    // este caso especial, un cliente que manda todo junto en su primer
+    // mensaje se quedaba atascado para siempre en esa pregunta — el LLM
+    // repetía la misma pregunta cada turno sin usar nunca la dirección que
+    // ya le habían dado, y el pedido nunca llegaba a confirmarse.
+    if (
+      (wantsDomicilio || wantsRecoger) &&
+      (!isAlreadyAskingMethod || wantsDomicilioByAddressPattern)
+    ) {
       const method = wantsDomicilio ? "domicilio" : "recoger";
       console.warn(
         `[openrouter] Safety net: cliente ya indicó método de entrega sin setDeliveryMethod — ejecutando setDeliveryMethod(${method})`,
