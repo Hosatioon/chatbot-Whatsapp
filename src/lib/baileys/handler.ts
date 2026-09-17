@@ -549,9 +549,15 @@ async function handleSingleMessage(
             if (adminHasUserMessage) {
               const dashboardUrl =
                 process.env.DASHBOARD_URL || process.env.NEXTAUTH_URL || "";
-              const orderLink = dashboardUrl
-                ? `${dashboardUrl.replace(/\/$/, "")}/?view=orders`
-                : "";
+              // Link directo a ESTE pedido, no al módulo genérico — con el
+              // token en vez del ID secuencial, para que sirva incluso sin
+              // login (ver src/app/o/[token]/page.tsx).
+              const orderLink =
+                dashboardUrl && confirmedOrder?.view_token
+                  ? `${dashboardUrl.replace(/\/$/, "")}/o/${confirmedOrder.view_token}`
+                  : dashboardUrl
+                    ? `${dashboardUrl.replace(/\/$/, "")}/?view=orders`
+                    : "";
               const adminMsg = `🔔 Nuevo pedido #${result.confirmedOrderId}\nCliente: ${pushName || phone}\nTotal: $${total.toLocaleString("es-CO")}${orderLink ? `\nVer: ${orderLink}` : ""}`;
               insertMessage(adminConvo.id, "assistant", adminMsg);
               enqueueOutbox(

@@ -56,6 +56,9 @@ function showNotification(title: string, body: string) {
 
 interface Props {
   selectedTenantId: number;
+  // Si viene de un link de notificación (ej: /?view=orders&orderId=60),
+  // abrimos ese pedido puntual apenas carga el panel.
+  initialOrderId?: number | null;
 }
 
 const ORDER_STATUSES: OrderStatus[] = [
@@ -139,7 +142,10 @@ function getDateRange(filter: string): { from?: number; to?: number } {
   }
 }
 
-export default function OrdersPanel({ selectedTenantId }: Props) {
+export default function OrdersPanel({
+  selectedTenantId,
+  initialOrderId = null,
+}: Props) {
   const [orders, setOrders] = useState<(Order & { item_count: number })[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedStatus, setSelectedStatus] = useState<"ALL" | OrderStatus>(
@@ -362,6 +368,11 @@ export default function OrdersPanel({ selectedTenantId }: Props) {
   useEffect(() => {
     loadOrders();
   }, [selectedTenantId, selectedStatus, dateFilter, searchQuery]);
+  // Solo una vez al montar — si el link traía un pedido puntual, lo abrimos.
+  useEffect(() => {
+    if (initialOrderId) void loadOrderDetail(initialOrderId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialOrderId]);
   useEffect(() => {
     const interval = setInterval(() => loadOrders(true), 5000);
     return () => clearInterval(interval);

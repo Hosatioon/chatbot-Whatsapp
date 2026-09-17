@@ -74,6 +74,7 @@ export interface Order {
   deleted_at: number | null;
   delivery_lat: number | null;
   delivery_lng: number | null;
+  view_token: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -484,6 +485,17 @@ if (!columnExists("orders", "cancel_reason")) {
 }
 if (!columnExists("orders", "deleted_at")) {
   db.exec(`ALTER TABLE orders ADD COLUMN deleted_at INTEGER`);
+}
+// Token único e impredecible para el link de "ver este pedido" que se manda
+// por WhatsApp al número de notificaciones — es un "magic link": la
+// seguridad viene de que solo quien recibió ese mensaje real de WhatsApp
+// tiene el token, no de adivinar el ID numérico secuencial del pedido (que
+// sí sería enumerable: /pedido/59, /pedido/60...).
+if (!columnExists("orders", "view_token")) {
+  db.exec(`ALTER TABLE orders ADD COLUMN view_token TEXT`);
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_view_token ON orders(view_token)`,
+  );
 }
 
 // Migración idempotente: description en products
@@ -2529,8 +2541,8 @@ export interface CreateOrderInput {
 
 // Prepared statements para pedidos
 const stmtInsertOrder = db.prepare(`
-  INSERT INTO orders (tenant_id, customer_phone, customer_name, status, total_amount, notes, delivery_lat, delivery_lng, created_at, updated_at)
-  VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?, unixepoch(), unixepoch())
+  INSERT INTO orders (tenant_id, customer_phone, customer_name, status, total_amount, notes, delivery_lat, delivery_lng, view_token, created_at, updated_at)
+  VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?, ?, unixepoch(), unixepoch())
 `);
 
 const stmtInsertOrderItem = db.prepare(`
@@ -2578,6 +2590,7 @@ export function createOrder(
       input.notes || null,
       input.delivery_lat ?? null,
       input.delivery_lng ?? null,
+      crypto.randomUUID(),
     );
 
     const orderId = Number(orderResult.lastInsertRowid);
@@ -2646,6 +2659,24 @@ export function getOrderById(
   if (!order) return null;
 
   const items = stmtGetOrderItems.all(orderId) as OrderItem[];
+  return { ...order, items };
+}
+
+const stmtGetOrderByViewToken = db.prepare(`
+  SELECT * FROM orders WHERE view_token = ?
+`);
+
+// Para el link público de "ver este pedido" (magic link, sin login) que se
+// manda por WhatsApp al número de notificaciones. No filtra por tenant_id
+// a propósito: el token en sí YA es la prueba de acceso (es impredecible,
+// no se adivina como un ID secuencial) — no hace falta una sesión de
+// tenant para usarlo, es justo el punto de este link.
+export function getOrderByViewToken(
+  token: string,
+): (Order & { items: OrderItem[] }) | null {
+  const order = stmtGetOrderByViewToken.get(token) as Order | undefined;
+  if (!order) return null;
+  const items = stmtGetOrderItems.all(order.id) as OrderItem[];
   return { ...order, items };
 }
 

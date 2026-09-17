@@ -54,6 +54,19 @@ export default function ConnectionGate() {
   // reselecciones sola" — se prende en el botón atrás y se apaga en
   // cualquier selección real (manual, cambio de tenant, reconexión).
   const skipAutoSelectRef = useRef(false);
+  // Si el link vino de la notificación de un pedido (ej: /?view=orders&orderId=60),
+  // abrimos ese pedido puntual apenas se monta el panel de Pedidos — se lee
+  // una sola vez al cargar, no hace falta que sea reactivo a cambios de URL.
+  const [initialOrderId] = useState<number | null>(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const raw = params.get("orderId");
+      const n = raw ? Number(raw) : NaN;
+      return Number.isInteger(n) && n > 0 ? n : null;
+    } catch {
+      return null;
+    }
+  });
   const [view, setView] = useState<View>(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -530,7 +543,10 @@ export default function ConnectionGate() {
           </main>
         ) : view === "orders" ? (
           <main className="flex-1 animate-fade-in bg-gray-50 overflow-hidden">
-            <OrdersPanel selectedTenantId={selectedTenantId} />
+            <OrdersPanel
+              selectedTenantId={selectedTenantId}
+              initialOrderId={initialOrderId}
+            />
           </main>
         ) : view === "config" ? (
           <main className="flex-1 animate-fade-in bg-gray-50 overflow-y-auto">

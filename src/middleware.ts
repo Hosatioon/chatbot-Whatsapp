@@ -10,7 +10,13 @@ import { NextResponse } from "next/server";
 // "registrando" el HTML del login como si fuera el service worker (bug
 // real encontrado 2026-09-16: navigator.serviceWorker.register('/sw.js')
 // fallaba en silencio por esto).
-const PUBLIC_PATHS = ["/login", "/api/auth", "/api/health", "/sw.js"];
+// /o/<token> es el link "mágico" de un pedido puntual que se manda por
+// WhatsApp al número de notificaciones — tiene que ser público (sin
+// sesión) a propósito: la seguridad viene del token impredecible en la
+// URL, no de una cookie de sesión. La página misma decide adentro si
+// mandar al login-normal-redirigido-al-panel (si ya hay sesión) o mostrar
+// el resumen de solo lectura (si no la hay).
+const PUBLIC_PATHS = ["/login", "/api/auth", "/api/health", "/sw.js", "/o/"];
 
 const { auth } = NextAuth(authConfig);
 
