@@ -12,6 +12,7 @@ import OrdersPanel from "./OrdersPanel";
 import ConfigPanel from "./ConfigPanel";
 import OperationsCenter from "./OperationsCenter";
 import PushNotificationSetup from "./PushNotificationSetup";
+import { playNotificationSound } from "@/lib/notification-sound";
 
 type Status = "disconnected" | "qr" | "connecting" | "connected";
 type View = "home" | "chats" | "products" | "orders" | "config" | "ops";
@@ -117,6 +118,12 @@ export default function ConnectionGate() {
     };
   }, [selectedTenantId]);
 
+  // Último last_message_at visto por conversación — para detectar "llegó un
+  // mensaje nuevo de un cliente" en el polling y sonar. Empieza null: la
+  // primera carga solo siembra el mapa, nunca suena (si no, sonaría al
+  // abrir la página con chats que ya estaban ahí de antes).
+  const lastSeenRef = useRef<Map<number, number> | null>(null);
+
   // Polling de conversaciones cada 2s, sólo cuando estamos conectados
   const loadConversations = useCallback(async () => {
     try {
@@ -127,6 +134,23 @@ export default function ConnectionGate() {
         conversations: ConversationListItem[];
       };
       setConversations(data.conversations);
+
+      const previous = lastSeenRef.current;
+      const next = new Map<number, number>();
+      let shouldPlay = false;
+      for (const c of data.conversations) {
+        const at = c.last_message_at ?? 0;
+        next.set(c.id, at);
+        if (
+          previous &&
+          c.last_message_role === "user" &&
+          at > (previous.get(c.id) ?? 0)
+        ) {
+          shouldPlay = true;
+        }
+      }
+      lastSeenRef.current = next;
+      if (shouldPlay) playNotificationSound();
       // Auto-seleccionar la primera solo si no estamos en la vista home de admin
       setSelectedId((curr) => {
         if (curr && data.conversations.some((c) => c.id === curr)) return curr;

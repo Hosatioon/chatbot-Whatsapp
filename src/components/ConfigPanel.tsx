@@ -6,6 +6,13 @@ import {
   detectPushStatus,
   type PushDeviceStatus,
 } from "@/lib/push-client";
+import {
+  SOUND_OPTIONS,
+  getSelectedSound,
+  setSelectedSound,
+  playNotificationSound,
+  type NotificationSoundId,
+} from "@/lib/notification-sound";
 
 interface TenantLink {
   label: string;
@@ -101,6 +108,18 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
   const [pushStatus, setPushStatus] = useState<PushDeviceStatus>("checking");
   const [pushBusy, setPushBusy] = useState(false);
   const [pushError, setPushError] = useState<string | null>(null);
+  const [selectedSound, setSelectedSoundState] =
+    useState<NotificationSoundId>("ping");
+
+  useEffect(() => {
+    setSelectedSoundState(getSelectedSound());
+  }, []);
+
+  function handleSoundChange(id: NotificationSoundId) {
+    setSelectedSoundState(id);
+    setSelectedSound(id);
+    playNotificationSound(id);
+  }
 
   const tenantQs = selectedTenantId > 0 ? `?tenantId=${selectedTenantId}` : "";
 
@@ -930,6 +949,39 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
               con Chrome, Firefox o Edge.
             </div>
           )}
+
+          <div className="mt-4 border-t border-gray-100 pt-4">
+            <label className="mb-1 block text-sm font-medium text-gray-700">
+              Sonido cuando escribe un cliente (con la página abierta)
+            </label>
+            <p className="mb-2 text-xs text-gray-400">
+              Este es un sonido aparte del que reproduce el sistema
+              operativo para el aviso — este sí lo elegís vos, y solo suena
+              mientras tenés esta pestaña abierta.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={selectedSound}
+                onChange={(e) =>
+                  handleSoundChange(e.target.value as NotificationSoundId)
+                }
+                className={inputClass + " w-auto"}
+              >
+                {SOUND_OPTIONS.map((opt) => (
+                  <option key={opt.id} value={opt.id}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => playNotificationSound(selectedSound)}
+                className="rounded-full border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+              >
+                🔊 Probar
+              </button>
+            </div>
+          </div>
         </section>
 
         {/* Sección 7: Pagos */}

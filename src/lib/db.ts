@@ -145,6 +145,10 @@ export interface Conversation {
 
 export interface ConversationListItem extends Conversation {
   last_message_preview: string | null;
+  // Para saber si el sonido de "mensaje nuevo" debe sonar en el panel: solo
+  // tiene sentido cuando el último mensaje es del CLIENTE (role='user'), no
+  // cuando lo escribió el bot o un humano del negocio.
+  last_message_role: string | null;
 }
 
 export interface Message {
@@ -1074,7 +1078,11 @@ const stmtListConvos = db.prepare<[number], ConversationListItem>(`
     (SELECT content FROM messages
        WHERE conversation_id = c.id
        ORDER BY created_at DESC
-       LIMIT 1) AS last_message_preview
+       LIMIT 1) AS last_message_preview,
+    (SELECT role FROM messages
+       WHERE conversation_id = c.id
+       ORDER BY created_at DESC
+       LIMIT 1) AS last_message_role
   FROM conversations c
   WHERE c.tenant_id = ?
   ORDER BY COALESCE(c.last_message_at, c.created_at) DESC
