@@ -38,7 +38,16 @@ export function setSelectedSound(id: NotificationSoundId): void {
 }
 
 let sharedCtx: AudioContext | null = null;
-function getAudioContext(): AudioContext | null {
+
+// BUG real encontrado (2026-09-17): esto reanudaba el AudioContext con
+// resume() — que es asíncrono — pero sin esperarlo, y el código de arriba
+// seguía de una y programaba el sonido de inmediato igual. Si el contexto
+// seguía "suspended" en ese momento (pasa seguido en Firefox), el sonido
+// quedaba programado pero el reloj del contexto nunca avanzaba — no sonaba
+// nunca, y sin ningún error visible (por eso "le doy 30 veces y no pasa
+// nada"). Ahora se espera de verdad a que termine de reanudar antes de
+// programar cualquier sonido.
+async function getAudioContext(): Promise<AudioContext | null> {
   if (typeof window === "undefined") return null;
   const Ctor =
     window.AudioContext ||
@@ -46,11 +55,9 @@ function getAudioContext(): AudioContext | null {
       .webkitAudioContext;
   if (!Ctor) return null;
   if (!sharedCtx) sharedCtx = new Ctor();
-  // Los navegadores suspenden el AudioContext hasta que haya una
-  // interacción del usuario con la página — si sigue "suspended", lo
-  // intentamos reanudar (no pasa nada si falla, simplemente no sonará
-  // hasta la primera interacción, como cualquier audio en la web).
-  if (sharedCtx.state === "suspended") void sharedCtx.resume().catch(() => {});
+  if (sharedCtx.state === "suspended") {
+    await sharedCtx.resume();
+  }
   return sharedCtx;
 }
 
@@ -74,11 +81,25 @@ function beep(
   osc.stop(startTime + duration + 0.02);
 }
 
-export function playNotificationSound(sound?: NotificationSoundId): void {
+// Devuelve true si de verdad se programó el sonido (para que un botón de
+// "probar" pueda avisar si algo salió mal, en vez de quedarse callado como
+// pasaba antes).
+export async function playNotificationSound(
+  sound?: NotificationSoundId,
+): Promise<boolean> {
   const id = sound ?? getSelectedSound();
-  if (id === "none") return;
-  const ctx = getAudioContext();
-  if (!ctx) return;
+  if (id === "none") return true;
+  let ctx: AudioContext | null;
+  try {
+    ctx = await getAudioContext();
+  } catch (e) {
+    console.error("[notification-sound] No se pudo iniciar el audio:", e);
+    return false;
+  }
+  if (!ctx) {
+    console.warn("[notification-sound] Este navegador no soporta Web Audio API");
+    return false;
+  }
   const now = ctx.currentTime;
 
   if (id === "ping") {
@@ -89,4 +110,5 @@ export function playNotificationSound(sound?: NotificationSoundId): void {
   } else if (id === "pop") {
     beep(ctx, 520, now, 0.08, 0.18);
   }
+  return true;
 }

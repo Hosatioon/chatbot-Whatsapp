@@ -110,15 +110,25 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
   const [pushError, setPushError] = useState<string | null>(null);
   const [selectedSound, setSelectedSoundState] =
     useState<NotificationSoundId>("ping");
+  const [soundTestState, setSoundTestState] = useState<
+    "idle" | "playing" | "failed"
+  >("idle");
 
   useEffect(() => {
     setSelectedSoundState(getSelectedSound());
   }, []);
 
-  function handleSoundChange(id: NotificationSoundId) {
+  async function handleSoundChange(id: NotificationSoundId) {
     setSelectedSoundState(id);
     setSelectedSound(id);
-    playNotificationSound(id);
+    await handleTestSound(id);
+  }
+
+  async function handleTestSound(id?: NotificationSoundId) {
+    setSoundTestState("playing");
+    const ok = await playNotificationSound(id ?? selectedSound);
+    setSoundTestState(ok ? "idle" : "failed");
+    if (ok) setTimeout(() => setSoundTestState("idle"), 400);
   }
 
   const tenantQs = selectedTenantId > 0 ? `?tenantId=${selectedTenantId}` : "";
@@ -975,11 +985,16 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
               </select>
               <button
                 type="button"
-                onClick={() => playNotificationSound(selectedSound)}
-                className="rounded-full border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                onClick={() => handleTestSound()}
+                className="rounded-full border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:border-gray-400 hover:bg-gray-200 active:bg-gray-300"
               >
-                🔊 Probar
+                {soundTestState === "playing" ? "🔊 Sonando..." : "🔊 Probar"}
               </button>
+              {soundTestState === "failed" && (
+                <span className="text-xs text-red-600">
+                  No se pudo reproducir en este navegador.
+                </span>
+              )}
             </div>
           </div>
         </section>
