@@ -328,8 +328,15 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
     );
   }
 
+  // BUG real reportado (2026-09-17): "veo uno con número real y cosas
+  // reales de Cookliz" — el placeholder de ejemplo (ej: "Ej: 573001234567")
+  // se confundía con un valor real ya guardado porque no había contraste
+  // de color definido — el navegador usaba su gris por defecto, que se ve
+  // parecido al texto normal según el tema. Ahora el placeholder es
+  // explícitamente más claro y en cursiva, y el texto real bien oscuro —
+  // se distinguen de un vistazo aunque no leas el "Ej:" del principio.
   const inputClass =
-    "w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none";
+    "w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder:italic placeholder:text-gray-400 focus:border-slate-500 focus:outline-none";
 
   return (
     <div className="mx-auto max-w-2xl p-6">
