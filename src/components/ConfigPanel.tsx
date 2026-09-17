@@ -397,7 +397,7 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
                 onChange={(e) =>
                   setConfig({ ...config, business_name: e.target.value })
                 }
-                placeholder="Ej: Cookliz, Mi Tienda, etc."
+                placeholder="Ej: Mi Tienda, Pastelería Ana, etc."
                 className={inputClass}
               />
             </div>
@@ -1020,7 +1020,7 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
               onChange={(e) =>
                 setConfig({ ...config, payment_info: e.target.value })
               }
-              placeholder="Ej: Transferencia: 3225669765 (Nequi y Daviplata). Pedir comprobante. Efectivo: confirmar monto exacto."
+              placeholder="Ej: Transferencia: 300 000 0000 (Nequi y Daviplata). Pedir comprobante. Efectivo: confirmar monto exacto."
               rows={3}
               className={inputClass}
             />
