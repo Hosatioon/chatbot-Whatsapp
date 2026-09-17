@@ -1059,13 +1059,28 @@ export async function generateReply(
     // sido de pasada o con errata, y lo ejecutamos directamente en vez de
     // volver a preguntar algo que ya contestó.
     const customerMsg = (ctx.lastCustomerMessage ?? "").toLowerCase();
-    const wantsDomicilio =
+    const wantsDomicilioByKeyword =
       customerMsg.includes("domicilio") ||
       customerMsg.includes("domi") || // tolera errata "domiclio"
       customerMsg.includes("envien") ||
       customerMsg.includes("envíen") ||
       customerMsg.includes("me lo traen") ||
       customerMsg.includes("me lo llevan");
+    // BUG real encontrado (2026-09-16): un cliente escribió todo junto en
+    // un solo mensaje — "3 galletas a boreal torre 2 apt 804" — sin decir
+    // la palabra "domicilio" en ningún lado. El LLM anotó los productos
+    // pero ignoró por completo la dirección, y el turno siguiente preguntó
+    // "¿domicilio o recoge en tienda?" como si no le hubieran dicho nada.
+    // Dar una referencia de torre/apto/piso/etc. es una señal tan fuerte de
+    // que quiere domicilio como decir la palabra misma — nadie manda el
+    // número de su apartamento para que le digan que pase a recogerlo a la
+    // tienda. Reusamos el mismo detector de "referencia de unidad" que ya
+    // usa setAddress (extractDetails) para no duplicar la lista de
+    // palabras clave en dos lugares.
+    const wantsDomicilioByAddressPattern =
+      extractDetails(ctx.lastCustomerMessage ?? "").details !== null;
+    const wantsDomicilio =
+      wantsDomicilioByKeyword || wantsDomicilioByAddressPattern;
     const wantsRecoger =
       customerMsg.includes("recoger") ||
       customerMsg.includes("recojo") ||
@@ -1104,9 +1119,15 @@ export async function generateReply(
           // después de la palabra de domicilio, intentamos resolverlo
           // como dirección en el mismo turno en vez de preguntarla de nuevo.
           if (method === "domicilio") {
-            const addressCandidate = extractAddressAfterDeliveryWord(
-              ctx.lastCustomerMessage ?? "",
-            );
+            // Si lo que disparó "domicilio" fue la palabra clave, seguimos
+            // recortando el texto después de ella como siempre. Si fue el
+            // patrón de dirección (torre/apto/piso...) sin ninguna palabra
+            // de domicilio, no hay nada que recortar — usamos el mensaje
+            // completo, igual que hace el flujo normal cuando el LLM sí
+            // llama setAddress con el texto tal cual lo mandó el cliente.
+            const addressCandidate = wantsDomicilioByKeyword
+              ? extractAddressAfterDeliveryWord(ctx.lastCustomerMessage ?? "")
+              : (ctx.lastCustomerMessage ?? "").trim() || null;
             if (addressCandidate) {
               console.warn(
                 `[openrouter] Safety net: probando dirección incluida en el mismo mensaje → "${addressCandidate}"`,
