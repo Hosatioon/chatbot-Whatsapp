@@ -23,6 +23,7 @@ import {
   searchProducts,
 } from "../db";
 import { generateReply, type LLMResponse } from "../openrouter";
+import { buildOrderSummaryForCustomer } from "../system-prompt";
 import { sendPushToTenant } from "../push";
 import { sendTextWithSafePreview } from "./send";
 import { checkAndRecord } from "../rate-limit";
@@ -758,19 +759,39 @@ async function handleSingleMessage(
   if (CONFIRM_SUFFIX.test(llmResponse.reply)) {
     llmResponse.reply = llmResponse.reply.replace(CONFIRM_SUFFIX, "");
     confirmFollowUp = "¿Confirmas para agendar tu pedido? 😊";
+    // BUG real encontrado (2026-09-17): a veces el LLM responde SOLO con
+    // "¿Confirma el pedido?" — sin ningún resumen antes. Después de
+    // recortar esa frase, llmResponse.reply quedaba vacío, pero igual se
+    // insertaba y se intentaba mandar por WhatsApp un mensaje vacío (el
+    // cliente veía la pregunta de confirmación sin haber visto nunca el
+    // resumen). En vez de confiar en que el LLM lo redacte bien, si queda
+    // vacío reconstruimos el resumen nosotros mismos con los datos reales
+    // del pedido — mismo patrón que ya usamos en computeNextStep.
+    if (!llmResponse.reply.trim() && convState) {
+      llmResponse.reply = buildOrderSummaryForCustomer(convState);
+    }
   }
 
-  insertMessage(convo.id, "assistant", llmResponse.reply);
+  // Si después de todo eso sigue vacío (no debería pasar, pero por las
+  // dudas), no insertamos ni mandamos un mensaje en blanco — dejamos que
+  // solo salga el confirmFollowUp si lo hay.
+  if (llmResponse.reply.trim()) {
+    insertMessage(convo.id, "assistant", llmResponse.reply);
 
-  // Delay aleatorio 1-3s para parecer más humano y evitar detección
-  await humanDelay(1000, 3000);
-  console.log(`[bot] Enviando respuesta LLM a ${phone}...`);
+    // Delay aleatorio 1-3s para parecer más humano y evitar detección
+    await humanDelay(1000, 3000);
+    console.log(`[bot] Enviando respuesta LLM a ${phone}...`);
 
-  try {
-    await sendTextWithSafePreview(sock, remoteJid, llmResponse.reply);
-    console.log(`[bot] → Enviado a ${phone}`);
-  } catch (err) {
-    console.error(`[bot] Error enviando a ${phone}:`, err);
+    try {
+      await sendTextWithSafePreview(sock, remoteJid, llmResponse.reply);
+      console.log(`[bot] → Enviado a ${phone}`);
+    } catch (err) {
+      console.error(`[bot] Error enviando a ${phone}:`, err);
+    }
+  } else {
+    console.warn(
+      `[bot:${tenantId}] Respuesta del LLM quedó vacía tras recortar el sufijo de confirmación y no había estado de conversación para reconstruir el resumen — se omite ese mensaje.`,
+    );
   }
 
   if (confirmFollowUp) {
