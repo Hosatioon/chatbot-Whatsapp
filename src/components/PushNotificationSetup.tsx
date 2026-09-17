@@ -1,84 +1,30 @@
 "use client";
 
 import { useEffect, useState } from "react";
-
-// Convierte la llave pública VAPID (base64url) al Uint8Array que pide
-// pushManager.subscribe — es la conversión estándar que recomienda la
-// documentación de Web Push, no hay forma más corta de hacerlo con las APIs
-// del navegador.
-function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding)
-    .replace(/-/g, "+")
-    .replace(/_/g, "/");
-  const rawData = atob(base64);
-  const outputArray = new Uint8Array(rawData.length);
-  for (let i = 0; i < rawData.length; i++) {
-    outputArray[i] = rawData.charCodeAt(i);
-  }
-  return outputArray;
-}
-
-async function subscribeThisDevice(): Promise<boolean> {
-  const reg = await navigator.serviceWorker.register("/sw.js");
-  await navigator.serviceWorker.ready;
-
-  const keyRes = await fetch("/api/push/vapid-public-key");
-  if (!keyRes.ok) return false;
-  const { publicKey } = (await keyRes.json()) as { publicKey?: string };
-  if (!publicKey) return false;
-
-  let sub = await reg.pushManager.getSubscription();
-  if (!sub) {
-    sub = await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(publicKey) as BufferSource,
-    });
-  }
-
-  const json = sub.toJSON();
-  if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) return false;
-
-  await fetch("/api/push/subscribe", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      endpoint: json.endpoint,
-      keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
-    }),
-  });
-  return true;
-}
+import { subscribeThisDevice, detectPushStatus } from "@/lib/push-client";
 
 const DISMISS_KEY = "ordifast_push_banner_dismissed";
 
-// Componente "invisible" la mayor parte del tiempo: si el navegador ya
-// tiene permiso concedido de antes, re-suscribe en silencio (por si se
-// perdió la suscripción — pasa al limpiar datos del sitio) y no muestra
-// nada. Si nunca se decidió, muestra una barra chiquita para pedirlo. Si el
-// dueño ya dijo que no, o el navegador no soporta push (ej: iPhone sin
-// instalar como app en la pantalla de inicio), no molesta con nada.
+// Barrita que aparece una sola vez por dispositivo para pedir el permiso.
+// Si el navegador no puede preguntar solo (iPhone sin instalar como app,
+// permiso ya bloqueado antes) o el dueño la descarta, esto no vuelve a
+// aparecer — para esos casos existe la sección persistente en
+// Configuración (ver ConfigPanel), que siempre muestra el estado real y
+// qué hacer, sin depender de esta barra.
 export default function PushNotificationSetup() {
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    if (
-      typeof window === "undefined" ||
-      !("Notification" in window) ||
-      !("serviceWorker" in navigator) ||
-      !("PushManager" in window)
-    ) {
-      return;
-    }
+    const status = detectPushStatus();
 
-    if (Notification.permission === "granted") {
+    if (status === "active") {
       void subscribeThisDevice();
       return;
     }
 
-    if (Notification.permission === "default") {
+    if (status === "default") {
       let dismissed = false;
       try {
         dismissed = localStorage.getItem(DISMISS_KEY) === "1";
@@ -96,7 +42,7 @@ export default function PushNotificationSetup() {
       const permission = await Notification.requestPermission();
       if (permission !== "granted") {
         setErrorMsg(
-          "No se activó — podés habilitarlo luego desde los permisos del sitio en tu navegador.",
+          "No se activó — podés habilitarlo luego desde Configuración.",
         );
         return;
       }

@@ -1,6 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import {
+  subscribeThisDevice,
+  detectPushStatus,
+  type PushDeviceStatus,
+} from "@/lib/push-client";
 
 interface TenantLink {
   label: string;
@@ -93,6 +98,9 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [botPhone, setBotPhone] = useState<string | null>(null);
   const [adminActivated, setAdminActivated] = useState<boolean | null>(null);
+  const [pushStatus, setPushStatus] = useState<PushDeviceStatus>("checking");
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushError, setPushError] = useState<string | null>(null);
 
   const tenantQs = selectedTenantId > 0 ? `?tenantId=${selectedTenantId}` : "";
 
@@ -102,6 +110,44 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
     void loadAdminActivationStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTenantId]);
+
+  // Estado de las notificaciones del navegador para ESTE dispositivo — a
+  // diferencia de la barrita de arriba (PushNotificationSetup), esto queda
+  // visible siempre en Configuración: si el navegador no preguntó solo
+  // (iPhone en Safari sin instalar como app, permiso bloqueado antes) o el
+  // dueño descartó la barra, acá siempre hay un lugar para ver qué pasa y
+  // qué hacer (bug real encontrado 2026-09-16: sin esto no había ninguna
+  // forma de saber por qué "no pasaba nada").
+  useEffect(() => {
+    const status = detectPushStatus();
+    setPushStatus(status);
+    if (status === "active") void subscribeThisDevice();
+  }, []);
+
+  async function handleActivatePush() {
+    setPushBusy(true);
+    setPushError(null);
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        setPushStatus(detectPushStatus());
+        setPushError(
+          "No se concedió el permiso. Revisá los permisos del sitio en tu navegador.",
+        );
+        return;
+      }
+      const ok = await subscribeThisDevice();
+      if (!ok) {
+        setPushError("No se pudo activar en este dispositivo. Probá de nuevo.");
+        return;
+      }
+      setPushStatus("active");
+    } catch {
+      setPushError("No se pudo activar en este dispositivo. Probá de nuevo.");
+    } finally {
+      setPushBusy(false);
+    }
+  }
 
   async function loadBotPhone() {
     try {
@@ -816,6 +862,74 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
               )}
             </div>
           </div>
+        </section>
+
+        {/* Sección 6b: Notificaciones del sistema (navegador, este dispositivo) */}
+        <section>
+          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-400">
+            Notificaciones del sistema (este dispositivo)
+          </h3>
+          <p className="mb-2 text-xs text-gray-400">
+            Aviso con sonido en la PC o el celular donde tengas el panel
+            abierto, cuando escribe un cliente o entra un pedido — aparte de
+            la notificación por WhatsApp de arriba, que va al número
+            administrativo sin importar quién la vea.
+          </p>
+
+          {pushStatus === "checking" && (
+            <p className="text-xs text-gray-400">Revisando...</p>
+          )}
+
+          {pushStatus === "active" && (
+            <div className="rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-xs text-green-800">
+              ✅ <strong>Activado en este dispositivo.</strong>
+            </div>
+          )}
+
+          {pushStatus === "default" && (
+            <div className="rounded-lg bg-blue-50 border border-blue-200 px-3 py-2 text-xs text-blue-800">
+              Todavía no está activado en este dispositivo.
+              {pushError && <p className="mt-1 text-red-600">{pushError}</p>}
+              <div>
+                <button
+                  type="button"
+                  onClick={handleActivatePush}
+                  disabled={pushBusy}
+                  className="mt-2 rounded-full bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-700 disabled:opacity-60"
+                >
+                  {pushBusy ? "Activando..." : "🔔 Activar en este dispositivo"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {pushStatus === "denied" && (
+            <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+              <strong>⚠️ Bloqueado en este navegador.</strong> En algún
+              momento se rechazó el permiso. Para reactivarlo: tocá el
+              ícono de candado/información al lado de la URL, buscá
+              &quot;Notificaciones&quot; y ponelo en &quot;Permitir&quot;,
+              después recargá esta página.
+            </div>
+          )}
+
+          {pushStatus === "ios-needs-install" && (
+            <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+              <strong>📱 En iPhone/iPad, Safari solo permite esto si la
+              página está agregada a la pantalla de inicio.</strong> Tocá el
+              ícono de compartir (el cuadradito con la flecha hacia
+              arriba), elegí &quot;Añadir a pantalla de inicio&quot;, y
+              después abrí OrdiFast desde ese ícono nuevo (no desde
+              Safari) — ahí sí va a aparecer la opción de activar.
+            </div>
+          )}
+
+          {pushStatus === "unsupported" && (
+            <div className="rounded-lg bg-gray-50 border border-gray-200 px-3 py-2 text-xs text-gray-600">
+              Este navegador no soporta notificaciones del sistema. Probá
+              con Chrome, Firefox o Edge.
+            </div>
+          )}
         </section>
 
         {/* Sección 7: Pagos */}
