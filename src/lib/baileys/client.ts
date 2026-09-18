@@ -348,10 +348,25 @@ async function start(tenantId: number): Promise<void> {
     }
   });
 
-  // Loop del outbox por tenant
+  // Loop del outbox por tenant.
+  //
+  // BUG real encontrado (2026-09-18): este temporizador se crea UNA sola vez
+  // (por eso el `if (!state.outboxTimer)`) y capturaba en su closure el
+  // `sock` de ESA primera llamada a start(). Cada vez que WhatsApp cerraba la
+  // conexión (code 428, pasa seguido) y scheduleReconnect creaba un socket
+  // nuevo, el temporizador seguía intentando mandar por el socket viejo y
+  // muerto — todo fallaba con "Connection Closed" para siempre, mientras
+  // que recibir y contestar mensajes seguía funcionando normal (esos usan el
+  // socket vigente que llega por el evento). Resultado real: todos los
+  // mensajes humanos escritos desde el dashboard y los avisos de pedido al
+  // admin se quedaron sin salir durante horas, sin ningún error visible
+  // para el dueño. Ahora en cada tick se lee el socket ACTUAL de
+  // state.handle (que start() reasigna en cada reconexión).
   if (!state.outboxTimer) {
     state.outboxTimer = setInterval(() => {
-      void processOutbox(tenantId, sock).catch((err) =>
+      const current = state.handle?.sock;
+      if (!current) return; // reconectando — el próximo tick reintenta
+      void processOutbox(tenantId, current).catch((err) =>
         console.error(`[bot:${tenantId}] Error procesando outbox:`, err),
       );
     }, 2000);
