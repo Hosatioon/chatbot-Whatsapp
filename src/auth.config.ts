@@ -5,7 +5,12 @@ import type { NextAuthConfig } from "next-auth";
 export const authConfig: NextAuthConfig = {
   session: {
     strategy: "jwt",
-    maxAge: 60 * 60 * 24 * 7,
+    // 30 días "deslizantes": mientras se entre al menos una vez al día (updateAge)
+    // la sesión se renueva sola, así que solo se cierra tras 30 días SIN abrir
+    // el panel. Antes eran 7 días y en el celular se sentía como pedir la
+    // contraseña cada rato.
+    maxAge: 60 * 60 * 24 * 30,
+    updateAge: 60 * 60 * 24,
   },
   pages: {
     signIn: "/login",

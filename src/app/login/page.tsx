@@ -175,6 +175,8 @@ function LoginForm() {
               </label>
               <input
                 type="email"
+                name="email"
+                autoComplete="username"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -189,6 +191,8 @@ function LoginForm() {
               </label>
               <input
                 type="password"
+                name="password"
+                autoComplete="current-password"
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
