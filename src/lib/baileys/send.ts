@@ -36,11 +36,13 @@ const URL_REGEX = /(https?:\/\/[^\s]+)/i;
 // libre del cliente. Nos quedamos con la mitigación que sí funciona sin
 // romper nada: validar que la URL resuelve a una IP pública ANTES de
 // pedirle el preview a Baileys.
+// Devuelve el id del mensaje en WhatsApp (o null si no vino) — se usa para
+// casar después los recibos de entrega/lectura con el mensaje del dashboard.
 export async function sendTextWithSafePreview(
   sock: WASocket,
   jid: string,
   text: string,
-): Promise<void> {
+): Promise<string | null> {
   const match = text.match(URL_REGEX);
   let linkPreview: Awaited<ReturnType<typeof getUrlInfo>> | null = null;
 
@@ -58,5 +60,6 @@ export async function sendTextWithSafePreview(
     }
   }
 
-  await sock.sendMessage(jid, { text, linkPreview });
+  const sent = await sock.sendMessage(jid, { text, linkPreview });
+  return sent?.key?.id ?? null;
 }

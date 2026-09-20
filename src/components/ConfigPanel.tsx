@@ -41,6 +41,7 @@ interface TenantConfig {
   extra_links: TenantLink[];
   feedback_message: string | null;
   admin_phone: string | null;
+  admin_phone_2: string | null;
   delivery_price: number | null;
   business_location_url: string | null;
   business_location_detected: boolean;
@@ -82,6 +83,7 @@ const DEFAULT_CONFIG: TenantConfig = {
   extra_links: [],
   feedback_message: "",
   admin_phone: "",
+  admin_phone_2: "",
   delivery_price: null,
   business_location_url: "",
   business_location_detected: false,
@@ -105,6 +107,7 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [botPhone, setBotPhone] = useState<string | null>(null);
   const [adminActivated, setAdminActivated] = useState<boolean | null>(null);
+  const [admin2Activated, setAdmin2Activated] = useState<boolean | null>(null);
   const [pushStatus, setPushStatus] = useState<PushDeviceStatus>("checking");
   const [pushBusy, setPushBusy] = useState(false);
   const [pushError, setPushError] = useState<string | null>(null);
@@ -204,10 +207,15 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
       const data = (await res.json()) as {
         configured?: boolean;
         activated?: boolean;
+        second?: { configured?: boolean; activated?: boolean };
       };
       setAdminActivated(data.configured ? (data.activated ?? false) : null);
+      setAdmin2Activated(
+        data.second?.configured ? (data.second.activated ?? false) : null,
+      );
     } catch {
       setAdminActivated(null);
+      setAdmin2Activated(null);
     }
   }
 
@@ -237,6 +245,7 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
         extra_links: Array.isArray(data.extra_links) ? data.extra_links : [],
         feedback_message: data.feedback_message ?? "",
         admin_phone: data.admin_phone ?? "",
+        admin_phone_2: data.admin_phone_2 ?? "",
         delivery_price: data.delivery_price ?? null,
         business_location_url: data.business_location_url ?? "",
         business_location_detected: data.business_location_detected ?? false,
@@ -337,6 +346,64 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
   // se distinguen de un vistazo aunque no leas el "Ej:" del principio.
   const inputClass =
     "w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder:italic placeholder:text-gray-400 focus:border-slate-500 focus:outline-none";
+
+  const renderAdminNumber = (
+    label: string,
+    field: "admin_phone" | "admin_phone_2",
+    activated: boolean | null,
+    help: string,
+  ) => {
+    const value = config[field] ?? "";
+    return (
+      <div>
+        <label className="mb-1 block text-sm font-medium text-gray-700">
+          {label}
+        </label>
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => setConfig({ ...config, [field]: e.target.value })}
+          placeholder="Ej: 573001234567"
+          className={inputClass}
+        />
+        <p className="mt-1 text-xs text-gray-400">{help}</p>
+        {value && activated === true && (
+          <div className="mt-2 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-800">
+            ✅ <strong>Activado.</strong> Este número ya puede recibir
+            notificaciones de pedidos nuevos.
+          </div>
+        )}
+        {value && activated === false && (
+          <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            <strong>⚠️ Falta activar.</strong> Para que las notificaciones
+            lleguen, este número tiene que escribirle primero al bot (así
+            evitamos que WhatsApp lo vea como un mensaje no solicitado). Tocá
+            el botón — abre WhatsApp con el mensaje ya listo, solo hay que
+            darle enviar desde <strong>{value}</strong>.
+            {botPhone ? (
+              <div>
+                <a
+                  href={`https://wa.me/${botPhone}?text=${encodeURIComponent(
+                    "Hola, quiero activar las notificaciones de pedidos 🔔",
+                  )}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-green-600 px-3 py-1.5 font-medium text-white hover:bg-green-700"
+                >
+                  💬 Activar por WhatsApp
+                </a>
+              </div>
+            ) : (
+              <p className="mt-1.5 text-amber-700">
+                (El bot todavía no está conectado — conectalo primero para
+                poder generar el enlace de activación.)
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="mx-auto max-w-2xl p-6">
@@ -843,60 +910,19 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
           <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-400">
             Notificaciones de pedidos
           </h3>
-          <div className="space-y-4">
-            <div>
-              <label className="mb-1 block text-sm font-medium text-gray-700">
-                Número administrativo (recibe pedidos)
-              </label>
-              <input
-                type="text"
-                value={config.admin_phone ?? ""}
-                onChange={(e) =>
-                  setConfig({ ...config, admin_phone: e.target.value })
-                }
-                placeholder="Ej: 573001234567"
-                className={inputClass}
-              />
-              <p className="mt-1 text-xs text-gray-400">
-                Número que recibe una notificación por WhatsApp cada vez que
-                entra un pedido nuevo. Puede ser el mismo número del bot u otro.
-              </p>
-              {config.admin_phone && adminActivated === true && (
-                <div className="mt-2 rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-xs text-green-800">
-                  ✅ <strong>Activado.</strong> Este número ya puede recibir
-                  notificaciones de pedidos nuevos.
-                </div>
-              )}
-              {config.admin_phone && adminActivated === false && (
-                <div className="mt-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
-                  <strong>⚠️ Falta activar.</strong> Para que las
-                  notificaciones lleguen, este número tiene que escribirle
-                  primero al bot (así evitamos que WhatsApp lo vea como un
-                  mensaje no solicitado). Tocá el botón — abre WhatsApp con el
-                  mensaje ya listo, solo hay que darle enviar desde{" "}
-                  <strong>{config.admin_phone}</strong>.
-                  {botPhone ? (
-                    <div>
-                      <a
-                        href={`https://wa.me/${botPhone}?text=${encodeURIComponent(
-                          "Hola, quiero activar las notificaciones de pedidos 🔔",
-                        )}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-green-600 px-3 py-1.5 font-medium text-white hover:bg-green-700"
-                      >
-                        💬 Activar por WhatsApp
-                      </a>
-                    </div>
-                  ) : (
-                    <p className="mt-1.5 text-amber-700">
-                      (El bot todavía no está conectado — conectalo primero
-                      para poder generar el enlace de activación.)
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
+          <div className="space-y-5">
+            {renderAdminNumber(
+              "Número administrativo (recibe pedidos)",
+              "admin_phone",
+              adminActivated,
+              "Número que recibe una notificación por WhatsApp cada vez que entra un pedido nuevo. Puede ser el mismo número del bot u otro.",
+            )}
+            {renderAdminNumber(
+              "Segundo número de notificaciones (opcional)",
+              "admin_phone_2",
+              admin2Activated,
+              "Para que el aviso le llegue también a otra persona. Máximo 2 números en total: más de eso se parece a un envío masivo y WhatsApp puede bloquear el número del bot. Cada uno tiene que activarse por su cuenta.",
+            )}
           </div>
         </section>
 

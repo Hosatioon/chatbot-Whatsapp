@@ -197,6 +197,7 @@ export default function ConversationPanel({
               role={m.role}
               content={m.content}
               createdAt={m.created_at}
+              deliveryStatus={m.delivery_status}
             />
           ))
         )}

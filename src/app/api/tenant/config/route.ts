@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getTenantById, updateTenantConfig, type TenantLink } from "@/lib/db";
+import {
+  getTenantById,
+  updateTenantConfig,
+  setTenantAdminPhone2,
+  type TenantLink,
+} from "@/lib/db";
 import { requireAuth } from "@/lib/tenant";
 import { extractLatLngFromUrl } from "@/lib/geo";
 
@@ -70,6 +75,7 @@ export async function GET(req: NextRequest) {
     extra_links: extraLinks,
     feedback_message: tenant.feedback_message,
     admin_phone: tenant.admin_phone,
+    admin_phone_2: tenant.admin_phone_2,
     delivery_price: tenant.delivery_price,
     business_location_url: tenant.business_location_url,
     business_location_detected:
@@ -134,6 +140,20 @@ export async function PUT(req: NextRequest) {
   const admin_phone = String(body.admin_phone ?? "")
     .trim()
     .slice(0, 20);
+  const admin_phone_2 = String(body.admin_phone_2 ?? "")
+    .trim()
+    .slice(0, 20);
+  // Máximo 2 números de notificación (más se parece demasiado a una
+  // difusión y sube el riesgo de bloqueo de WhatsApp), y no pueden ser el
+  // mismo número escrito de dos formas.
+  const d1 = admin_phone.replace(/\D/g, "");
+  const d2 = admin_phone_2.replace(/\D/g, "");
+  if (d2 && d1 && (d1.endsWith(d2) || d2.endsWith(d1))) {
+    return NextResponse.json(
+      { error: "El segundo número de notificaciones no puede ser el mismo que el primero." },
+      { status: 400 },
+    );
+  }
   const delivery_price =
     body.delivery_price != null
       ? Math.max(0, Math.floor(Number(body.delivery_price)))
@@ -256,6 +276,8 @@ export async function PUT(req: NextRequest) {
     bot_paused: effectiveBotPaused,
     paused_message: effectivePausedMessage,
   });
+
+  setTenantAdminPhone2(tenantId, admin_phone_2 || null);
 
   // Guardar lat/lng directamente en la BD
   if (business_lat !== null && business_lng !== null) {

@@ -32,20 +32,24 @@ export async function GET(req: NextRequest) {
   }
 
   const tenant = getTenantById(tenantId);
-  const adminPhoneRaw = tenant?.admin_phone?.trim();
-  const normalized = (adminPhoneRaw ?? "").replace(/[^\d]/g, "");
 
-  if (!adminPhoneRaw || normalized.length < 7) {
-    return NextResponse.json({ configured: false, activated: false });
+  // Estado de UN número: configurado + ya "activó" (existe una conversación
+  // con ese número que tiene al menos un mensaje escrito POR él).
+  function statusOf(raw: string | null | undefined) {
+    const normalized = (raw?.trim() ?? "").replace(/[^\d]/g, "");
+    if (normalized.length < 7) return { configured: false, activated: false };
+    const convo = findConversationByPhoneSuffix(tenantId as number, normalized);
+    if (!convo) return { configured: true, activated: false };
+    const activated = getRecentHistory(convo.id, 50).some(
+      (m) => m.role === "user",
+    );
+    return { configured: true, activated };
   }
 
-  const convo = findConversationByPhoneSuffix(tenantId, normalized);
-  if (!convo) {
-    return NextResponse.json({ configured: true, activated: false });
-  }
-
-  const history = getRecentHistory(convo.id, 50);
-  const activated = history.some((m) => m.role === "user");
-
-  return NextResponse.json({ configured: true, activated });
+  const first = statusOf(tenant?.admin_phone);
+  // Compat: los campos planos siguen siendo los del primer número.
+  return NextResponse.json({
+    ...first,
+    second: statusOf(tenant?.admin_phone_2),
+  });
 }

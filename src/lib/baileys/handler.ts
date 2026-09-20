@@ -22,6 +22,10 @@ import {
   findConversationByPhoneSuffix,
   searchProducts,
   getOrderById,
+  markMessageSent,
+  markMessageFailed,
+  markOutboxExpired,
+  getConfirmReminderCandidates,
 } from "../db";
 import { generateReply, type LLMResponse } from "../openrouter";
 import { buildOrderSummaryForCustomer } from "../system-prompt";
@@ -74,6 +78,129 @@ function isDuplicateMessage(id: string | null | undefined): boolean {
 function humanDelay(minMs: number, maxMs: number): Promise<void> {
   const ms = minMs + Math.floor(Math.random() * (maxMs - minMs));
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// Pregunta de confirmación que va en su propio mensaje después del resumen.
+// Constante compartida: el recordatorio (processConfirmReminders) la usa para
+// reconocer "el último mensaje de la conversación es esta pregunta".
+export const CONFIRM_FOLLOWUP_TEXT = "¿Confirmas para agendar tu pedido? 😊";
+
+// Manda un texto por WhatsApp y lo vincula con su fila de `messages` (para
+// los chulitos del dashboard): al salir guarda el id del mensaje de
+// WhatsApp y lo marca "sent"; si falla lo marca "failed" y vuelve a lanzar el
+// error para que cada caller mantenga su propio try/catch y su log.
+async function sendTracked(
+  sock: WASocket,
+  jid: string,
+  text: string,
+  messageId: number | null,
+): Promise<void> {
+  try {
+    const waId = await sendTextWithSafePreview(sock, jid, text);
+    if (messageId) markMessageSent(messageId, waId);
+  } catch (e) {
+    if (messageId) markMessageFailed(messageId);
+    throw e;
+  }
+}
+
+// Números de notificación configurados (máximo 2), solo dígitos y sin repetir.
+// Se guardan tal cual los escribe el dueño (normalmente SIN indicativo de
+// país), por eso todas las comparaciones son por sufijo.
+function getAdminNumbers(
+  tenant: { admin_phone?: string | null; admin_phone_2?: string | null } | null,
+): string[] {
+  const out: string[] = [];
+  for (const raw of [tenant?.admin_phone, tenant?.admin_phone_2]) {
+    const d = raw?.replace(/[^\d]/g, "") ?? "";
+    if (d.length < 7) continue;
+    if (out.some((o) => o.endsWith(d) || d.endsWith(o))) continue;
+    out.push(d);
+  }
+  return out;
+}
+
+function isAdminNumber(
+  adminNumbers: string[],
+  phone: string,
+  realPhone: string | null,
+): boolean {
+  return adminNumbers.some(
+    (n) =>
+      phone === n ||
+      phone.endsWith(n) ||
+      (realPhone != null && realPhone.endsWith(n)),
+  );
+}
+
+// Avisa de un pedido nuevo a cada número de notificación que ya "activó" (es
+// decir, que ya le escribió al bot alguna vez — así nunca somos nosotros los
+// que iniciamos el chat en frío). Con 2 números el aviso sale de a uno: con
+// el texto un poco distinto y una pausa de unos segundos entre los dos, para
+// no parecer una difusión del mismo mensaje idéntico a varios destinatarios
+// (que es justo lo que los antispam de WhatsApp miran).
+async function notifyAdminNumbers(opts: {
+  tenantId: number;
+  adminNumbers: string[];
+  orderId: number;
+  customerLabel: string;
+  total: number;
+  viewToken: string | null;
+}): Promise<void> {
+  const { tenantId, adminNumbers, orderId, customerLabel, total, viewToken } =
+    opts;
+  if (adminNumbers.length === 0) return;
+
+  const dashboardUrl =
+    process.env.DASHBOARD_URL || process.env.NEXTAUTH_URL || "";
+  const base = dashboardUrl.replace(/\/$/, "");
+  // Link directo a ESTE pedido (token, sirve sin login — ver
+  // src/app/o/[token]/page.tsx); si no hay token, al módulo de pedidos.
+  const link = base
+    ? viewToken
+      ? `${base}/o/${viewToken}`
+      : `${base}/?view=orders`
+    : "";
+  const money = `$${total.toLocaleString("es-CO")}`;
+  const variants = [
+    `🔔 Nuevo pedido #${orderId}\nCliente: ${customerLabel}\nTotal: ${money}${link ? `\nVer: ${link}` : ""}`,
+    `🛎️ Entró el pedido #${orderId} · ${customerLabel}\nTotal: ${money}${link ? `\nDetalle: ${link}` : ""}`,
+  ];
+
+  let sentCount = 0;
+  for (const [i, num] of adminNumbers.entries()) {
+    const adminConvo = findConversationByPhoneSuffix(tenantId, num);
+    if (!adminConvo) {
+      console.log(
+        `[bot:${tenantId}] Número de notificación ${num} sin conversación previa — no se notifica`,
+      );
+      continue;
+    }
+    const hasUserMessage = getRecentHistory(adminConvo.id, 50).some(
+      (m) => m.role === "user",
+    );
+    if (!hasUserMessage) {
+      console.log(
+        `[bot:${tenantId}] Número de notificación ${num} no ha activado (sin mensajes previos)`,
+      );
+      continue;
+    }
+    if (sentCount > 0) await humanDelay(4000, 9000);
+    const text = variants[i % variants.length];
+    const messageId = insertMessage(adminConvo.id, "assistant", text, "pending");
+    enqueueOutbox(
+      tenantId,
+      adminConvo.id,
+      adminConvo.phone,
+      text,
+      adminConvo.jid,
+      messageId,
+    );
+    sentCount++;
+    console.log(
+      `[bot:${tenantId}] Notificación de pedido #${orderId} encolada para ${num}`,
+    );
+  }
 }
 
 // Construir el bloque de links programático (sin IA)
@@ -300,19 +427,18 @@ async function handleSingleMessage(
   // que "phone"/"realPhone" vienen del JID de WhatsApp CON indicativo (ej.
   // "573217780643") — por eso comparamos por sufijo, no por igualdad exacta.
   const tenant = getTenantById(tenantId);
-  const normalizedAdminPhone = tenant?.admin_phone?.replace(/[^\d]/g, "") ?? "";
-  const isAdminNotifNumber =
-    normalizedAdminPhone.length >= 7 &&
-    (phone === normalizedAdminPhone ||
-      phone.endsWith(normalizedAdminPhone) ||
-      (realPhone != null && realPhone.endsWith(normalizedAdminPhone)));
+  const isAdminNotifNumber = isAdminNumber(
+    getAdminNumbers(tenant),
+    phone,
+    realPhone,
+  );
   if (isAdminNotifNumber) {
     const adminInfoMsg =
       "📌 Este número está configurado para recibir las notificaciones de pedidos del negocio, no es el chat de atención a clientes.";
-    insertMessage(convo.id, "assistant", adminInfoMsg);
+    const adminInfoMsgId = insertMessage(convo.id, "assistant", adminInfoMsg, "pending");
     await humanDelay(500, 1200);
     try {
-      await sendTextWithSafePreview(sock, remoteJid, adminInfoMsg);
+      await sendTracked(sock, remoteJid, adminInfoMsg, adminInfoMsgId);
       console.log(
         `[bot:${tenantId}] → Mensaje informativo enviado al número de notificaciones ${phone}`,
       );
@@ -330,10 +456,10 @@ async function handleSingleMessage(
     const pausedMsg =
       tenant.paused_message ||
       "En este momento no estamos recibiendo pedidos. ¡Gracias por tu paciencia, pronto volvemos!";
-    insertMessage(convo.id, "assistant", pausedMsg);
+    const pausedMsgId = insertMessage(convo.id, "assistant", pausedMsg, "pending");
     await humanDelay(1000, 3000);
     try {
-      await sendTextWithSafePreview(sock, remoteJid, pausedMsg);
+      await sendTracked(sock, remoteJid, pausedMsg, pausedMsgId);
       console.log(`[bot:${tenantId}] → Mensaje de pausa enviado a ${phone}`);
     } catch (e) {
       console.error(`[bot] Error enviando mensaje de pausa:`, e);
@@ -348,10 +474,10 @@ async function handleSingleMessage(
       const oohMsg =
         tenant.out_of_hours_message ||
         "¡Gracias por escribir! En este momento estamos cerrados. Te respondemos en nuestro horario de atención.";
-      insertMessage(convo.id, "assistant", oohMsg);
+      const oohMsgId = insertMessage(convo.id, "assistant", oohMsg, "pending");
       await humanDelay(1000, 3000);
       try {
-        await sendTextWithSafePreview(sock, remoteJid, oohMsg);
+        await sendTracked(sock, remoteJid, oohMsg, oohMsgId);
         console.log(`[bot] → Mensaje fuera de horario enviado a ${phone}`);
       } catch (e) {
         console.error(`[bot] Error enviando mensaje fuera de horario:`, e);
@@ -371,9 +497,9 @@ async function handleSingleMessage(
   // Si hay saludo personalizado, enviarlo y no llamar al LLM
   if (isFirstMessage && tenant?.custom_greeting) {
     const greeting = tenant.custom_greeting;
-    insertMessage(convo.id, "assistant", greeting);
+    const greetingId = insertMessage(convo.id, "assistant", greeting, "pending");
     try {
-      await sendTextWithSafePreview(sock, remoteJid, greeting);
+      await sendTracked(sock, remoteJid, greeting, greetingId);
       console.log(`[bot] → Saludo personalizado enviado a ${phone}`);
     } catch (e) {
       console.error(`[bot] Error enviando saludo:`, e);
@@ -383,9 +509,9 @@ async function handleSingleMessage(
     const linksMsg = buildLinksMessage(tenantId);
     if (linksMsg) {
       await humanDelay(500, 1500);
-      insertMessage(convo.id, "assistant", linksMsg);
+      const linksMsgId = insertMessage(convo.id, "assistant", linksMsg, "pending");
       try {
-        await sendTextWithSafePreview(sock, remoteJid, linksMsg);
+        await sendTracked(sock, remoteJid, linksMsg, linksMsgId);
         console.log(`[bot] → Catálogo enviado a ${phone}`);
       } catch (e) {
         console.error(`[bot] Error enviando catálogo:`, e);
@@ -402,9 +528,9 @@ async function handleSingleMessage(
     console.warn(`[bot:${tenantId}] Presupuesto IA excedido: ${budget.reason}`);
     const budgetMsg =
       "En este momento te atenderá una persona del equipo. ¡Gracias por tu paciencia!";
-    insertMessage(convo.id, "assistant", budgetMsg);
+    const budgetMsgId = insertMessage(convo.id, "assistant", budgetMsg, "pending");
     try {
-      await sendTextWithSafePreview(sock, remoteJid, budgetMsg);
+      await sendTracked(sock, remoteJid, budgetMsg, budgetMsgId);
     } catch (e) {
       console.error("[bot] Error enviando mensaje de presupuesto:", e);
     }
@@ -514,79 +640,33 @@ async function handleSingleMessage(
         !replyLower.includes("confirmado") &&
         !replyLower.includes("pedido #")
       ) {
-        insertMessage(convo.id, "assistant", confirmMsg);
+        const confirmMsgId = insertMessage(convo.id, "assistant", confirmMsg, "pending");
         await humanDelay(1000, 3000);
         try {
-          await sendTextWithSafePreview(sock, remoteJid, confirmMsg);
+          await sendTracked(sock, remoteJid, confirmMsg, confirmMsgId);
           console.log(`[bot] → Confirmación de pedido enviada a ${phone}`);
         } catch (e) {
           console.error(`[bot] Error enviando confirmación:`, e);
         }
       }
 
-      // Notificar al admin — solo si el admin ya escribió primero
-      try {
-        const adminPhone = tenant?.admin_phone?.trim();
-        if (adminPhone) {
-          const normalizedAdminPhone = adminPhone.replace(/[^\d]/g, "");
-          // Buscar la conversación del admin por sufijo, no por igualdad
-          // exacta: admin_phone se guarda tal cual lo escribe el dueño
-          // (normalmente SIN indicativo de país, ej. "3217780643"), mientras
-          // que el real_phone guardado en la conversación viene del JID de
-          // WhatsApp CON indicativo (ej. "573217780643"). Con igualdad
-          // exacta esto nunca hacía match y la notificación se perdía en
-          // silencio (bug real encontrado 2026-09-15, ver commit).
-          const adminConvo = findConversationByPhoneSuffix(
-            tenantId,
-            normalizedAdminPhone,
-          );
-          // Solo notificar si existe la conversación Y tiene mensajes del admin (role=user)
-          if (adminConvo) {
-            const adminHistory = getRecentHistory(adminConvo.id, 50);
-            const adminHasUserMessage = adminHistory.some(
-              (m) => m.role === "user",
-            );
-            if (adminHasUserMessage) {
-              const dashboardUrl =
-                process.env.DASHBOARD_URL || process.env.NEXTAUTH_URL || "";
-              // Link directo a ESTE pedido, no al módulo genérico — con el
-              // token en vez del ID secuencial, para que sirva incluso sin
-              // login (ver src/app/o/[token]/page.tsx).
-              const orderLink =
-                dashboardUrl && confirmedOrder?.view_token
-                  ? `${dashboardUrl.replace(/\/$/, "")}/o/${confirmedOrder.view_token}`
-                  : dashboardUrl
-                    ? `${dashboardUrl.replace(/\/$/, "")}/?view=orders`
-                    : "";
-              const adminMsg = `🔔 Nuevo pedido #${result.confirmedOrderId}\nCliente: ${pushName || phone}\nTotal: $${total.toLocaleString("es-CO")}${orderLink ? `\nVer: ${orderLink}` : ""}`;
-              insertMessage(adminConvo.id, "assistant", adminMsg);
-              enqueueOutbox(
-                tenantId,
-                adminConvo.id,
-                adminConvo.phone,
-                adminMsg,
-                adminConvo.jid,
-              );
-              console.log(
-                `[bot:${tenantId}] Notificación de pedido #${result.confirmedOrderId} encolada para admin ${normalizedAdminPhone}`,
-              );
-            } else {
-              console.log(
-                `[bot:${tenantId}] Admin ${normalizedAdminPhone} no ha activado notificaciones (sin mensajes previos)`,
-              );
-            }
-          } else {
-            console.log(
-              `[bot:${tenantId}] Admin ${normalizedAdminPhone} sin conversación previa — no se notifica`,
-            );
-          }
-        }
-      } catch (notifErr) {
+      // Notificar a los números de notificación (máx. 2) — solo a los que ya
+      // escribieron primero. No se espera acá: el segundo aviso sale con una
+      // pausa de unos segundos (ver notifyAdminNumbers) y no debe retrasar el
+      // resto del flujo del pedido.
+      void notifyAdminNumbers({
+        tenantId,
+        adminNumbers: getAdminNumbers(tenant),
+        orderId: result.confirmedOrderId,
+        customerLabel: String(pushName || phone),
+        total,
+        viewToken: confirmedOrder?.view_token ?? null,
+      }).catch((notifErr) =>
         console.error(
-          `[bot:${tenantId}] Error notificando al admin:`,
+          `[bot:${tenantId}] Error notificando a los números de notificación:`,
           notifErr,
-        );
-      }
+        ),
+      );
 
       // Push del pedido nuevo a los dispositivos del panel — a diferencia
       // del aviso por WhatsApp, este no depende de admin_phone ni de haber
@@ -619,9 +699,9 @@ async function handleSingleMessage(
 
     const fallbackMsg =
       "Ups, tuve un problema procesando tu mensaje. ¿Me lo puedes repetir de otra forma? O si prefieres, te conecto con una persona del equipo.";
-    insertMessage(convo.id, "assistant", fallbackMsg);
+    const fallbackMsgId = insertMessage(convo.id, "assistant", fallbackMsg, "pending");
     try {
-      await sendTextWithSafePreview(sock, remoteJid, fallbackMsg);
+      await sendTracked(sock, remoteJid, fallbackMsg, fallbackMsgId);
     } catch (e) {
       console.error("[bot] Error enviando mensaje de fallback:", e);
     }
@@ -773,7 +853,7 @@ async function handleSingleMessage(
   let confirmFollowUp: string | null = null;
   if (CONFIRM_SUFFIX.test(llmResponse.reply)) {
     llmResponse.reply = llmResponse.reply.replace(CONFIRM_SUFFIX, "");
-    confirmFollowUp = "¿Confirmas para agendar tu pedido? 😊";
+    confirmFollowUp = CONFIRM_FOLLOWUP_TEXT;
     // BUG real encontrado (2026-09-17): a veces el LLM responde SOLO con
     // "¿Confirma el pedido?" — sin ningún resumen antes. Después de
     // recortar esa frase, llmResponse.reply quedaba vacío, pero igual se
@@ -791,14 +871,19 @@ async function handleSingleMessage(
   // dudas), no insertamos ni mandamos un mensaje en blanco — dejamos que
   // solo salga el confirmFollowUp si lo hay.
   if (llmResponse.reply.trim()) {
-    insertMessage(convo.id, "assistant", llmResponse.reply);
+    const replyMsgId = insertMessage(
+      convo.id,
+      "assistant",
+      llmResponse.reply,
+      "pending",
+    );
 
     // Delay aleatorio 1-3s para parecer más humano y evitar detección
     await humanDelay(1000, 3000);
     console.log(`[bot] Enviando respuesta LLM a ${phone}...`);
 
     try {
-      await sendTextWithSafePreview(sock, remoteJid, llmResponse.reply);
+      await sendTracked(sock, remoteJid, llmResponse.reply, replyMsgId);
       console.log(`[bot] → Enviado a ${phone}`);
     } catch (err) {
       console.error(`[bot] Error enviando a ${phone}:`, err);
@@ -812,8 +897,13 @@ async function handleSingleMessage(
   if (confirmFollowUp) {
     await humanDelay(700, 1500);
     try {
-      await sendTextWithSafePreview(sock, remoteJid, confirmFollowUp);
-      insertMessage(convo.id, "assistant", confirmFollowUp);
+      const confirmId = insertMessage(
+        convo.id,
+        "assistant",
+        confirmFollowUp,
+        "pending",
+      );
+      await sendTracked(sock, remoteJid, confirmFollowUp, confirmId);
       console.log(`[bot] → Pregunta de confirmación enviada a ${phone}`);
     } catch (err) {
       console.error(`[bot] Error enviando confirmación a ${phone}:`, err);
@@ -830,8 +920,13 @@ async function handleSingleMessage(
     if (linksMsg && !llmAlreadySentCatalog) {
       await humanDelay(500, 1500);
       try {
-        await sendTextWithSafePreview(sock, remoteJid, linksMsg);
-        insertMessage(convo.id, "assistant", linksMsg);
+        const catalogMsgId = insertMessage(
+          convo.id,
+          "assistant",
+          linksMsg,
+          "pending",
+        );
+        await sendTracked(sock, remoteJid, linksMsg, catalogMsgId);
         console.log(`[bot] → Catálogo enviado a ${phone}`);
       } catch (err) {
         console.error(`[bot] Error enviando catálogo a ${phone}:`, err);
@@ -844,6 +939,13 @@ async function handleSingleMessage(
 // Outbox (mensajes humanos desde el dashboard)
 // ---------------------------------------------------------------------------
 
+// Un mensaje de la cola que lleva más de esto sin poder salir se descarta en
+// vez de mandarlo tarde: llegar 2 horas después ("ya sale para allá" cuando
+// el pedido ya llegó) confunde más que no llegar, y tras una caída larga de
+// WhatsApp se soltaba todo el atraso de golpe. El mensaje queda marcado "no
+// enviado" en el dashboard para que el dueño lo sepa.
+const OUTBOX_MAX_AGE_SEC = 10 * 60;
+
 export async function processOutbox(
   tenantId: number,
   sock: WASocket,
@@ -855,20 +957,86 @@ export async function processOutbox(
 
   const pending = getPendingOutbox(tenantId, 20);
   if (pending.length === 0) return;
+  const nowSec = Math.floor(Date.now() / 1000);
   for (const item of pending) {
+    if (nowSec - item.created_at > OUTBOX_MAX_AGE_SEC) {
+      markOutboxExpired(item.id);
+      if (item.message_id) markMessageFailed(item.message_id);
+      console.warn(
+        `[bot] Outbox #${item.id} vencido (más de ${OUTBOX_MAX_AGE_SEC / 60} min sin poder salir) — se descarta, no se manda tarde`,
+      );
+      continue;
+    }
     // Preferir el remote_jid guardado (soporta @lid). Fallback a
     // construirlo desde el phone para outbox legacy.
     const jid = item.remote_jid ?? `${item.phone}@s.whatsapp.net`;
     try {
-      await sendTextWithSafePreview(sock, jid, item.content);
+      const waId = await sendTextWithSafePreview(sock, jid, item.content);
       markOutboxSent(item.id);
+      if (item.message_id) markMessageSent(item.message_id, waId);
       console.log(`[bot] → Outbox #${item.id} enviado a ${jid}`);
     } catch (err) {
       console.error(
         `[bot] Error enviando outbox #${item.id} a ${item.phone}:`,
         (err as Error).message ?? err,
       );
-      // Dejar sent=0 → reintenta en próximo tick
+      // Dejar sent=0 → reintenta en próximo tick (hasta que venza)
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Recordatorio de confirmación
+// ---------------------------------------------------------------------------
+
+// Pedido real del negocio (2026-09-18): 2 de 3 clientes se quedaron sin
+// confirmar tras recibir el resumen — a veces la gente da por hecho que ya
+// quedó. Si pasan 2 minutos sin respuesta después de "¿Confirmas...?", el
+// bot manda UN solo recordatorio amable. No corre para conversaciones más
+// viejas que 30 min (si el cliente ya se fue, insistir es peor).
+const CONFIRM_REMINDER_AFTER_SEC = 120;
+const CONFIRM_REMINDER_MAX_AGE_SEC = 30 * 60;
+const CONFIRM_REMINDER_TEXT =
+  "Para poder agendar tu pedido necesito que me confirmes que todo está correcto 😊 Quedo atento.";
+
+export async function processConfirmReminders(
+  tenantId: number,
+  sock: WASocket,
+  onlyConversationId?: number, // solo para pruebas
+): Promise<void> {
+  if (!sock.user) return;
+  const tenant = getTenantById(tenantId);
+  if (!tenant || tenant.bot_paused) return;
+
+  const candidates = getConfirmReminderCandidates(
+    tenantId,
+    CONFIRM_FOLLOWUP_TEXT,
+    CONFIRM_REMINDER_AFTER_SEC,
+    CONFIRM_REMINDER_MAX_AGE_SEC,
+  ).filter((c) => onlyConversationId == null || c.id === onlyConversationId);
+
+  for (const c of candidates) {
+    const jid = c.jid ?? `${c.phone}@s.whatsapp.net`;
+    // Se inserta ANTES de mandar: así el último mensaje de la conversación
+    // deja de ser la pregunta y no vuelve a calzar en el próximo barrido
+    // (un solo recordatorio por resumen, aunque el envío falle).
+    const messageId = insertMessage(
+      c.id,
+      "assistant",
+      CONFIRM_REMINDER_TEXT,
+      "pending",
+    );
+    try {
+      await sendTracked(sock, jid, CONFIRM_REMINDER_TEXT, messageId);
+      console.log(
+        `[bot:${tenantId}] → Recordatorio de confirmación enviado (conversación ${c.id})`,
+      );
+    } catch (err) {
+      console.error(
+        `[bot:${tenantId}] Error enviando recordatorio de confirmación (conv ${c.id}):`,
+        (err as Error).message ?? err,
+      );
+    }
+    await humanDelay(1500, 4000);
   }
 }

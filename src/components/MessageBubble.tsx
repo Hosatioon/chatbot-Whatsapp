@@ -1,9 +1,61 @@
-import type { Role } from "@/lib/db";
+import type { DeliveryStatus, Role } from "@/lib/db";
 
 interface Props {
   role: Role;
   content: string;
   createdAt: number;
+  // Solo los mensajes que salen por WhatsApp (bot/humano) traen estado; los
+  // del cliente y los viejos (de antes de los chulitos) vienen null.
+  deliveryStatus?: DeliveryStatus | null;
+}
+
+const STATUS_LABEL: Record<DeliveryStatus, string> = {
+  pending: "Enviando...",
+  sent: "Enviado",
+  delivered: "Entregado",
+  read: "Leído",
+  failed: "No enviado",
+};
+
+// Chulitos estilo WhatsApp: reloj (pendiente), ✓ enviado, ✓✓ entregado,
+// ✓✓ azul leído, ⚠ no enviado. "Leído" solo aparece si el cliente tiene
+// activados los recibos de lectura en su WhatsApp.
+function StatusTicks({ status }: { status: DeliveryStatus }) {
+  const label = STATUS_LABEL[status];
+  if (status === "failed") {
+    return (
+      <span
+        className="inline-flex items-center gap-0.5 font-medium text-red-600"
+        title="No se pudo enviar por WhatsApp"
+        aria-label={label}
+      >
+        <svg viewBox="0 0 16 16" className="h-3 w-3" fill="currentColor" aria-hidden>
+          <path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Zm-.75 3.5h1.5v4h-1.5V5Zm0 5.25h1.5v1.5h-1.5v-1.5Z" />
+        </svg>
+        {label}
+      </span>
+    );
+  }
+  if (status === "pending") {
+    return (
+      <span title={label} aria-label={label} className="text-gray-400">
+        <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden>
+          <circle cx="8" cy="8" r="6" />
+          <path d="M8 4.5V8l2.3 1.4" />
+        </svg>
+      </span>
+    );
+  }
+  const double = status === "delivered" || status === "read";
+  const color = status === "read" ? "text-sky-500" : "text-gray-400";
+  return (
+    <span title={label} aria-label={label} className={color}>
+      <svg viewBox="0 0 20 12" className="h-3 w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <path d="M1.5 6.5 5 10 12 2" />
+        {double && <path d="M8 9.5 9 10.5 18 2" />}
+      </svg>
+    </span>
+  );
 }
 
 function formatTime(unix: number): string {
@@ -16,7 +68,12 @@ function formatTime(unix: number): string {
   });
 }
 
-export default function MessageBubble({ role, content, createdAt }: Props) {
+export default function MessageBubble({
+  role,
+  content,
+  createdAt,
+  deliveryStatus,
+}: Props) {
   const isUser = role === "user";
   const isHuman = role === "human";
 
@@ -42,8 +99,9 @@ export default function MessageBubble({ role, content, createdAt }: Props) {
           {label}
         </div>
         <div className="whitespace-pre-wrap break-words text-sm">{content}</div>
-        <div className="mt-1 text-right text-[10px] text-gray-500">
-          {formatTime(createdAt)}
+        <div className="mt-1 flex items-center justify-end gap-1 text-[10px] text-gray-500">
+          <span>{formatTime(createdAt)}</span>
+          {!isUser && deliveryStatus && <StatusTicks status={deliveryStatus} />}
         </div>
       </div>
     </div>

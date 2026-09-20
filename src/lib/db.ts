@@ -114,6 +114,7 @@ export interface Tenant {
   extra_links: string | null;
   feedback_message: string | null;
   admin_phone: string | null;
+  admin_phone_2: string | null;
   delivery_price: number | null;
   business_location_url: string | null;
   business_lat: number | null;
@@ -151,12 +152,21 @@ export interface ConversationListItem extends Conversation {
   last_message_role: string | null;
 }
 
+export type DeliveryStatus =
+  | "pending"
+  | "sent"
+  | "delivered"
+  | "read"
+  | "failed";
+
 export interface Message {
   id: number;
   conversation_id: number;
   role: Role;
   content: string;
   created_at: number;
+  wa_message_id: string | null;
+  delivery_status: DeliveryStatus | null;
 }
 
 export type ConversationStateName =
@@ -240,6 +250,7 @@ export interface OutboxItem {
   remote_jid: string | null;
   content: string;
   sent: number;
+  message_id: number | null;
   created_at: number;
 }
 
@@ -429,6 +440,24 @@ if (!columnExists("conversation_state", "draft_delivery_price")) {
 }
 if (!columnExists("outbox", "remote_jid")) {
   db.exec(`ALTER TABLE outbox ADD COLUMN remote_jid TEXT`);
+}
+// Chulitos de estado (2026-09-18): id del mensaje de WhatsApp (para casar los
+// recibos de entrega/lectura que llegan por Baileys) y estado de entrega.
+// delivery_status: pending | sent | delivered | read | failed — NULL en los
+// mensajes viejos y en los del cliente (no aplica).
+if (!columnExists("messages", "wa_message_id")) {
+  db.exec(`ALTER TABLE messages ADD COLUMN wa_message_id TEXT`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_messages_wa_id ON messages(wa_message_id)`,
+  );
+}
+if (!columnExists("messages", "delivery_status")) {
+  db.exec(`ALTER TABLE messages ADD COLUMN delivery_status TEXT`);
+}
+// Vincula cada fila de la cola con el mensaje visible en el dashboard, para
+// poder marcarlo enviado / no enviado.
+if (!columnExists("outbox", "message_id")) {
+  db.exec(`ALTER TABLE outbox ADD COLUMN message_id INTEGER`);
 }
 
 // Migración idempotente: agregar tablas de pedidos
@@ -738,6 +767,11 @@ if (!hasColumn("tenants", "feedback_message")) {
 }
 if (!hasColumn("tenants", "admin_phone")) {
   db.exec("ALTER TABLE tenants ADD COLUMN admin_phone TEXT");
+}
+// Segundo número de notificaciones (máximo 2 en total — más de eso se parece
+// demasiado a una difusión y sube el riesgo de bloqueo de WhatsApp).
+if (!hasColumn("tenants", "admin_phone_2")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN admin_phone_2 TEXT");
 }
 if (!hasColumn("tenants", "delivery_price")) {
   db.exec("ALTER TABLE tenants ADD COLUMN delivery_price INTEGER");
@@ -1108,27 +1142,74 @@ export function setMode(
 // Mensajes
 // ---------------------------------------------------------------------------
 
-const stmtInsertMessage = db.prepare<[number, Role, string]>(
-  "INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)",
+const stmtInsertMessage = db.prepare<[number, Role, string, string | null]>(
+  "INSERT INTO messages (conversation_id, role, content, delivery_status) VALUES (?, ?, ?, ?)",
 );
 const stmtTouchConvo = db.prepare<[number]>(
   "UPDATE conversations SET last_message_at = unixepoch() WHERE id = ?",
 );
 
 const txInsertMessage = db.transaction(
-  (conversationId: number, role: Role, content: string): number => {
-    const info = stmtInsertMessage.run(conversationId, role, content);
+  (
+    conversationId: number,
+    role: Role,
+    content: string,
+    deliveryStatus: DeliveryStatus | null,
+  ): number => {
+    const info = stmtInsertMessage.run(
+      conversationId,
+      role,
+      content,
+      deliveryStatus,
+    );
     stmtTouchConvo.run(conversationId);
     return Number(info.lastInsertRowid);
   },
 );
 
+// `deliveryStatus`: pasar "pending" en los mensajes que de verdad se van a
+// mandar por WhatsApp (bot / humano) para que el dashboard les muestre
+// chulitos; los del cliente y los internos se quedan en NULL.
 export function insertMessage(
   conversationId: number,
   role: Role,
   content: string,
+  deliveryStatus: DeliveryStatus | null = null,
 ): number {
-  return txInsertMessage(conversationId, role, content);
+  return txInsertMessage(conversationId, role, content, deliveryStatus);
+}
+
+// --- Estado de entrega de mensajes (chulitos) ---------------------------
+
+const stmtMarkMsgSent = db.prepare<[string | null, number]>(
+  `UPDATE messages SET wa_message_id = COALESCE(?, wa_message_id),
+     delivery_status = CASE WHEN delivery_status IN ('delivered','read') THEN delivery_status ELSE 'sent' END
+   WHERE id = ?`,
+);
+export function markMessageSent(messageId: number, waMessageId: string | null) {
+  stmtMarkMsgSent.run(waMessageId, messageId);
+}
+
+const stmtMarkMsgFailed = db.prepare<[number]>(
+  `UPDATE messages SET delivery_status = 'failed' WHERE id = ? AND delivery_status = 'pending'`,
+);
+export function markMessageFailed(messageId: number) {
+  stmtMarkMsgFailed.run(messageId);
+}
+
+// Solo sube de nivel (sent → delivered → read), nunca baja: los recibos de
+// WhatsApp pueden llegar desordenados o repetidos.
+const stmtSetStatusByWaId = db.prepare<[string, string, number]>(
+  `UPDATE messages SET delivery_status = ?
+   WHERE wa_message_id = ?
+     AND (CASE delivery_status WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 WHEN 'sent' THEN 1 ELSE 0 END) < ?`,
+);
+export function setMessageStatusByWaId(
+  waMessageId: string,
+  status: "sent" | "delivered" | "read",
+): number {
+  const rank = status === "read" ? 3 : status === "delivered" ? 2 : 1;
+  return stmtSetStatusByWaId.run(status, waMessageId, rank).changes;
 }
 
 const stmtGetMessages = db.prepare<[number, number, number], Message>(
@@ -1354,9 +1435,9 @@ export function setConnectionState(
 // ---------------------------------------------------------------------------
 
 const stmtEnqueueOutbox = db.prepare<
-  [number, number, string, string | null, string]
+  [number, number, string, string | null, string, number | null]
 >(
-  "INSERT INTO outbox (tenant_id, conversation_id, phone, remote_jid, content) VALUES (?, ?, ?, ?, ?)",
+  "INSERT INTO outbox (tenant_id, conversation_id, phone, remote_jid, content, message_id) VALUES (?, ?, ?, ?, ?, ?)",
 );
 
 export function enqueueOutbox(
@@ -1365,6 +1446,7 @@ export function enqueueOutbox(
   phone: string,
   content: string,
   remoteJid?: string | null,
+  messageId?: number | null,
 ): number {
   const info = stmtEnqueueOutbox.run(
     tenantId,
@@ -1372,6 +1454,7 @@ export function enqueueOutbox(
     phone,
     remoteJid ?? null,
     content,
+    messageId ?? null,
   );
   return Number(info.lastInsertRowid);
 }
@@ -1390,6 +1473,64 @@ const stmtMarkOutboxSent = db.prepare<[number]>(
 
 export function markOutboxSent(id: number): void {
   stmtMarkOutboxSent.run(id);
+}
+
+// sent=2 → vencido: no se manda nunca. Un mensaje que llegó horas tarde
+// (ej. "ya sale para allá" cuando el pedido ya llegó) confunde más que no
+// llegar — y sin esto, tras una caída larga de WhatsApp se soltaba todo el
+// atraso de golpe.
+const stmtExpireOutbox = db.prepare<[number]>(
+  "UPDATE outbox SET sent = 2 WHERE id = ? AND sent = 0",
+);
+export function markOutboxExpired(id: number): void {
+  stmtExpireOutbox.run(id);
+}
+
+const stmtSetAdminPhone2 = db.prepare<[string | null, number]>(
+  "UPDATE tenants SET admin_phone_2 = ? WHERE id = ?",
+);
+export function setTenantAdminPhone2(
+  tenantId: number,
+  phone: string | null,
+): void {
+  stmtSetAdminPhone2.run(phone, tenantId);
+}
+
+// Conversaciones donde el bot mandó el resumen + "¿Confirmas...?" y el
+// cliente todavía no contestó nada. Criterio: el ÚLTIMO mensaje de la
+// conversación es esa pregunta (si el cliente escribió algo después, o ya
+// mandamos el recordatorio, deja de calzar — así no hace falta ninguna
+// columna extra ni sobrevive un reinicio a medias), tiene entre
+// `minAgeSec` y `maxAgeSec` de antigüedad, está en modo IA y el pedido
+// sigue esperando confirmación.
+const stmtConfirmReminderCandidates = db.prepare<
+  [number, string, number, number],
+  { id: number; jid: string | null; phone: string; last_id: number }
+>(
+  `SELECT c.id, c.jid, c.phone, lm.id AS last_id
+   FROM conversations c
+   JOIN conversation_state s ON s.conversation_id = c.id
+   JOIN messages lm ON lm.id = (
+     SELECT id FROM messages WHERE conversation_id = c.id
+     ORDER BY created_at DESC, id DESC LIMIT 1)
+   WHERE c.tenant_id = ? AND c.mode = 'AI'
+     AND s.state = 'WAITING_CONFIRMATION'
+     AND lm.role = 'assistant' AND lm.content = ?
+     AND lm.created_at <= unixepoch() - ?
+     AND lm.created_at >= unixepoch() - ?`,
+);
+export function getConfirmReminderCandidates(
+  tenantId: number,
+  confirmQuestion: string,
+  minAgeSec: number,
+  maxAgeSec: number,
+) {
+  return stmtConfirmReminderCandidates.all(
+    tenantId,
+    confirmQuestion,
+    minAgeSec,
+    maxAgeSec,
+  );
 }
 
 // ---------------------------------------------------------------------------

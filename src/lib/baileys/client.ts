@@ -11,8 +11,17 @@ import pino from "pino";
 import qrcodeTerminal from "qrcode-terminal";
 import path from "node:path";
 import fs from "node:fs";
-import { setConnectionState, getConnectionState, getTenantById } from "../db";
-import { handleIncomingMessages, processOutbox } from "./handler";
+import {
+  setConnectionState,
+  getConnectionState,
+  getTenantById,
+  setMessageStatusByWaId,
+} from "../db";
+import {
+  handleIncomingMessages,
+  processOutbox,
+  processConfirmReminders,
+} from "./handler";
 
 const AUTH_ROOT = path.resolve(process.cwd(), "auth");
 
@@ -67,6 +76,7 @@ interface TenantState {
   handle: BaileysHandle | null;
   reconnectTimer: NodeJS.Timeout | null;
   outboxTimer: NodeJS.Timeout | null;
+  reminderTimer: NodeJS.Timeout | null;
   startTs: number;
   reconnectCount: number;
   qrTimer: NodeJS.Timeout | null;
@@ -84,6 +94,7 @@ function getOrCreateState(tenantId: number): TenantState {
       handle: null,
       reconnectTimer: null,
       outboxTimer: null,
+      reminderTimer: null,
       startTs: Math.floor(Date.now() / 1000),
       reconnectCount: 0,
       qrTimer: null,
@@ -348,6 +359,49 @@ async function start(tenantId: number): Promise<void> {
     }
   });
 
+  // Chulitos: los recibos de entrega/lectura de los mensajes que mandamos.
+  // Son eventos PASIVOS — WhatsApp los empuja solos, no mandamos nada extra
+  // ni marcamos los mensajes del cliente como leídos (eso sí sería tráfico
+  // adicional hacia WhatsApp). El "leído" solo llega si el cliente tiene
+  // activados los recibos de lectura en su WhatsApp.
+  sock.ev.on("messages.update", (updates) => {
+    for (const u of updates) {
+      if (!u.key.fromMe || !u.key.id) continue;
+      const st = u.update?.status;
+      if (st == null) continue;
+      // proto Status: 2 SERVER_ACK, 3 DELIVERY_ACK, 4 READ, 5 PLAYED
+      const mapped = st >= 4 ? "read" : st === 3 ? "delivered" : st === 2 ? "sent" : null;
+      if (mapped && setMessageStatusByWaId(u.key.id, mapped) > 0) {
+        console.log(`[bot:${tenantId}] recibo ${mapped} (msg ${u.key.id})`);
+      }
+    }
+  });
+  sock.ev.on("message-receipt.update", (updates) => {
+    for (const u of updates) {
+      if (!u.key.fromMe || !u.key.id) continue;
+      const mapped = u.receipt.readTimestamp
+        ? "read"
+        : u.receipt.receiptTimestamp
+          ? "delivered"
+          : null;
+      if (mapped && setMessageStatusByWaId(u.key.id, mapped) > 0) {
+        console.log(`[bot:${tenantId}] recibo ${mapped} (msg ${u.key.id})`);
+      }
+    }
+  });
+
+  // Barrido de recordatorios de confirmación (cada 20 s). Igual que el
+  // outbox: lee el socket VIGENTE en cada tick, no el de esta llamada.
+  if (!state.reminderTimer) {
+    state.reminderTimer = setInterval(() => {
+      const current = state.handle?.sock;
+      if (!current) return;
+      void processConfirmReminders(tenantId, current).catch((err) =>
+        console.error(`[bot:${tenantId}] Error en recordatorios:`, err),
+      );
+    }, 20000);
+  }
+
   // Loop del outbox por tenant.
   //
   // BUG real encontrado (2026-09-18): este temporizador se crea UNA sola vez
@@ -448,6 +502,10 @@ export async function shutdownTenant(
   if (state.outboxTimer) {
     clearInterval(state.outboxTimer);
     state.outboxTimer = null;
+  }
+  if (state.reminderTimer) {
+    clearInterval(state.reminderTimer);
+    state.reminderTimer = null;
   }
   if (state.qrTimer) {
     clearTimeout(state.qrTimer);

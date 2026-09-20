@@ -70,8 +70,18 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     }
     const content = parsed.data.content;
 
-    const messageId = insertMessage(id, "human", content);
-    enqueueOutbox(convo.tenant_id, id, convo.phone, content, convo.jid);
+    // "pending" → el dashboard le muestra el relojito hasta que el bot lo
+    // despache y WhatsApp lo confirme (chulitos); si la cola lo vence sin
+    // poder mandarlo pasa a "failed" y se ve como "no enviado".
+    const messageId = insertMessage(id, "human", content, "pending");
+    enqueueOutbox(
+      convo.tenant_id,
+      id,
+      convo.phone,
+      content,
+      convo.jid,
+      messageId,
+    );
 
     return NextResponse.json({ ok: true, messageId });
   } catch (e) {
