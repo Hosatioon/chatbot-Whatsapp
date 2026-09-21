@@ -3,18 +3,58 @@
 // Sonido de "mensaje nuevo" reproducido directamente en la página mientras
 // está abierta — esto SÍ lo controlamos nosotros (a diferencia del sonido
 // de una notificación push, que decide el navegador/sistema operativo y no
-// se puede forzar desde JS). Generado con Web Audio API en vez de un
-// archivo de audio: nada que cargar, nada que licenciar, funciona en
-// cualquier navegador moderno.
+// se puede forzar desde JS). Ping, Campanita y Pop se generan con la Web
+// Audio API; los demás tonos son archivos MP3 en public/sounds.
 
-export type NotificationSoundId = "ping" | "chime" | "pop" | "none";
+export type NotificationSoundId =
+  | "ping"
+  | "chime"
+  | "pop"
+  | "confident"
+  | "light-hearted"
+  | "out-of-nowhere"
+  | "relax"
+  | "none";
 
 export const SOUND_OPTIONS: { id: NotificationSoundId; label: string }[] = [
   { id: "ping", label: "Ping (por defecto)" },
   { id: "chime", label: "Campanita" },
   { id: "pop", label: "Pop corto" },
+  { id: "confident", label: "Confiado" },
+  { id: "light-hearted", label: "Alegre" },
+  { id: "out-of-nowhere", label: "De la nada (corto)" },
+  { id: "relax", label: "Relajado" },
   { id: "none", label: "Sin sonido" },
 ];
+
+// Tonos que vienen de archivo (public/sounds/<id>.mp3) en vez de generarse
+// con osciladores.
+const FILE_SOUNDS: ReadonlySet<NotificationSoundId> = new Set([
+  "confident",
+  "light-hearted",
+  "out-of-nowhere",
+  "relax",
+]);
+const bufferCache = new Map<string, AudioBuffer>();
+
+// Se decodifica y se reproduce con el mismo AudioContext (ya "desbloqueado"
+// por el clic del usuario) en vez de un <audio>: así no depende de las
+// políticas de autoplay de cada navegador. Se cachea el buffer para que la
+// segunda vez suene al instante.
+async function playFileSound(ctx: AudioContext, id: string): Promise<boolean> {
+  let buffer = bufferCache.get(id);
+  if (!buffer) {
+    const res = await fetch(`/sounds/${id}.mp3`);
+    if (!res.ok) return false;
+    buffer = await ctx.decodeAudioData(await res.arrayBuffer());
+    bufferCache.set(id, buffer);
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(ctx.destination);
+  src.start();
+  return true;
+}
 
 const STORAGE_KEY = "ordifast_notification_sound";
 const DEFAULT_SOUND: NotificationSoundId = "ping";
@@ -103,6 +143,15 @@ export async function playNotificationSound(
     return false;
   }
   const now = ctx.currentTime;
+
+  if (FILE_SOUNDS.has(id)) {
+    try {
+      return await playFileSound(ctx, id);
+    } catch (e) {
+      console.error("[notification-sound] No se pudo reproducir el tono:", e);
+      return false;
+    }
+  }
 
   if (id === "ping") {
     // Doble beep en vez de uno solo — mucho más notorio que un tono único,

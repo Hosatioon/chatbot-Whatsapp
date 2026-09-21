@@ -55,6 +55,6 @@ export default auth((req) => {
 export const config = {
   matcher: [
     // Protege todo excepto archivos estáticos y assets de Next
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|svg|webp)).*)",
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|svg|webp|mp3)).*)",
   ],
 };
