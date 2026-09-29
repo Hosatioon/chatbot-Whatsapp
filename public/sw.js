@@ -11,6 +11,18 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+// BUG real encontrado (2026-09-29): sin ESTE listener, Chrome en Android no
+// considera la página "instalable de verdad" — "Agregar a pantalla de
+// inicio" queda como un simple acceso directo del navegador (abre una
+// pestaña normal), no como una app aparte. Eso rompía justo lo que se
+// necesitaba: para que las notificaciones push funcionen bien en el
+// celular, hace falta la instalación completa, no el acceso directo. No
+// cacheamos nada a propósito (ver comentario de arriba): esto solo deja
+// pasar la petición tal cual, existe nada más para cumplir el requisito.
+self.addEventListener("fetch", (event) => {
+  event.respondWith(fetch(event.request));
+});
+
 self.addEventListener("push", (event) => {
   let data = { title: "OrdiFast", body: "Tenés algo nuevo por revisar" };
   try {
