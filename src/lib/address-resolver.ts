@@ -1,7 +1,7 @@
 import {
   type LatLng,
   type GeoCandidate,
-  searchNominatim,
+  searchMapCandidates,
   searchPhoton,
   normalizeAddressForGeocoding,
   haversineKm,
@@ -456,7 +456,7 @@ export async function resolveDeliveryAddress(
       )[0] ?? reference;
     let geoExtra: GeoCandidate[] = [];
     try {
-      geoExtra = await searchNominatim(geoQuery, 5, origin, maxKm);
+      geoExtra = await searchMapCandidates(tenantId, geoQuery, 5, origin, maxKm);
       if (geoExtra.length === 0) {
         geoExtra = await searchPhoton(geoQuery, 5, origin, maxKm);
       }
@@ -556,7 +556,7 @@ export async function resolveDeliveryAddress(
   let allCandidates: GeoCandidate[] = [];
 
   for (const q of variants) {
-    const nominatimResults = await searchNominatim(q, 5, origin, maxKm);
+    const nominatimResults = await searchMapCandidates(tenantId, q, 5, origin, maxKm);
     allCandidates.push(...nominatimResults);
     if (allCandidates.length >= 5) break;
     await new Promise((r) => setTimeout(r, 200));
@@ -585,7 +585,7 @@ export async function resolveDeliveryAddress(
     }
     for (const q of fallbacks) {
       console.log(`[resolver] fallback progresivo: "${q}"`);
-      const nominatimResults = await searchNominatim(q, 5, origin, maxKm);
+      const nominatimResults = await searchMapCandidates(tenantId, q, 5, origin, maxKm);
       allCandidates.push(...nominatimResults);
       if (allCandidates.length >= 5) break;
       await new Promise((r) => setTimeout(r, 200));

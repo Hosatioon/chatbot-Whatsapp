@@ -902,6 +902,25 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_known_places_tenant ON known_places(tenant_id);
 `);
+
+// Caché de geocodificación por negocio: guarda la respuesta del proveedor
+// (hoy Google Geocoding API, con Nominatim/Photon como respaldo gratis) para
+// un texto de búsqueda exacto, para no volver a pagar/pedir la misma
+// dirección dos veces. A diferencia de `known_places` (que solo guarda un
+// lugar YA CONFIRMADO por un cliente, con su nombre final), esto cachea
+// cualquier búsqueda cruda que se le haya hecho al proveedor de mapas,
+// ambigua o no — el ahorro real viene de que varios clientes de un mismo
+// negocio suelen escribir los mismos puntos de referencia o calles cercanas.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS geocode_cache (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL,
+    query_norm TEXT NOT NULL,
+    candidates_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    UNIQUE(tenant_id, query_norm)
+  );
+`);
 // BUG real encontrado (2026-09-10): un lugar cargado masivamente desde datos
 // oficiales (aproximado, sin verificar) se resolvía sin pedir confirmación,
 // igual que uno aprendido de un pedido real ya confirmado — un cliente dijo
@@ -3532,6 +3551,61 @@ export function findKnownPlace(
     }
   }
   return null;
+}
+
+// --- Caché de geocodificación (ver tabla geocode_cache más arriba) -------
+
+export interface CachedGeoCandidate {
+  name: string;
+  displayName: string;
+  lat: number;
+  lng: number;
+}
+
+function normalizeGeocodeQuery(query: string): string {
+  return query.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+const stmtGetGeocodeCache = db.prepare<
+  [number, string],
+  { candidates_json: string }
+>(
+  "SELECT candidates_json FROM geocode_cache WHERE tenant_id = ? AND query_norm = ?",
+);
+
+export function getGeocodeCache(
+  tenantId: number,
+  query: string,
+): CachedGeoCandidate[] | null {
+  const row = stmtGetGeocodeCache.get(tenantId, normalizeGeocodeQuery(query));
+  if (!row) return null;
+  try {
+    const parsed = JSON.parse(row.candidates_json);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+const stmtSetGeocodeCache = db.prepare<[number, string, string]>(
+  `INSERT INTO geocode_cache (tenant_id, query_norm, candidates_json)
+   VALUES (?, ?, ?)
+   ON CONFLICT(tenant_id, query_norm) DO UPDATE SET
+     candidates_json = excluded.candidates_json,
+     created_at = unixepoch()`,
+);
+
+export function setGeocodeCache(
+  tenantId: number,
+  query: string,
+  candidates: CachedGeoCandidate[],
+): void {
+  if (candidates.length === 0) return;
+  stmtSetGeocodeCache.run(
+    tenantId,
+    normalizeGeocodeQuery(query),
+    JSON.stringify(candidates),
+  );
 }
 
 export function upsertKnownPlace(

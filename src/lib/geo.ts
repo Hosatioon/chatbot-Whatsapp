@@ -1,3 +1,5 @@
+import { getGeocodeCache, setGeocodeCache } from "./db";
+
 export interface LatLng {
   lat: number;
   lng: number;
@@ -117,6 +119,106 @@ function extractLatLngFromUrlSync(url: string): LatLng | null {
   if (m) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]) };
 
   return null;
+}
+
+/**
+ * Buscar con Google Geocoding API. Requiere GOOGLE_MAPS_API_KEY — si no está
+ * configurada, o la API falla, devuelve [] (el llamador cae al respaldo
+ * gratis de Nominatim/Photon, ver `searchMapCandidates`).
+ * `region=co` sesga los resultados a Colombia sin restringirlos por completo
+ * (a diferencia de Nominatim, acá no hay countrycodes=co estricto porque
+ * Google ya es bastante preciso con direcciones colombianas reales).
+ */
+export async function searchGoogleGeocode(
+  query: string,
+  limit: number = 5,
+  origin?: LatLng,
+  maxKm: number = 15,
+): Promise<GeoCandidate[]> {
+  const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+  if (!apiKey) return [];
+
+  let bounds = "";
+  if (origin) {
+    const delta = maxKm / 111; // ~111km por grado de latitud
+    bounds = `&bounds=${origin.lat - delta},${origin.lng - delta}|${origin.lat + delta},${origin.lng + delta}`;
+  }
+
+  try {
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&region=co${bounds}&key=${apiKey}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return [];
+    const data = (await res.json()) as {
+      status: string;
+      results?: Array<{
+        formatted_address: string;
+        address_components?: Array<{ long_name: string; types: string[] }>;
+        geometry: { location: { lat: number; lng: number } };
+      }>;
+    };
+    if (data.status !== "OK" || !data.results) return [];
+
+    const candidates: GeoCandidate[] = [];
+    for (const r of data.results.slice(0, limit)) {
+      const lat = r.geometry.location.lat;
+      const lng = r.geometry.location.lng;
+      if (origin) {
+        const dist = haversineKm(origin, { lat, lng });
+        if (dist > maxKm) {
+          console.log(
+            `[geo] Google "${query}" → ${r.formatted_address.slice(0, 50)} está a ${dist.toFixed(1)}km, ignorando`,
+          );
+          continue;
+        }
+      }
+      const name =
+        r.address_components?.find((c) => c.types.includes("route"))
+          ?.long_name ??
+        r.formatted_address.split(",")[0] ??
+        query;
+      candidates.push({ name, displayName: r.formatted_address, lat, lng });
+    }
+    return candidates;
+  } catch (err) {
+    console.error(`[geo] Google Geocoding error for "${query}":`, err);
+    return [];
+  }
+}
+
+/**
+ * Punto de entrada único para buscar una dirección en el mapa: primero
+ * revisa la caché por tenant (misma búsqueda exacta ya resuelta antes, sin
+ * gastar ninguna llamada), luego Google (si hay API key configurada) y solo
+ * si eso no da nada cae al respaldo gratis de Nominatim — mismo
+ * comportamiento que tenía antes `searchNominatim` a solas, por eso es un
+ * reemplazo directo en los llamadores (mismo orden de parámetros).
+ * No incluye Photon acá: cada llamador decide si lo intenta después, igual
+ * que hacía antes con searchNominatim.
+ */
+export async function searchMapCandidates(
+  tenantId: number,
+  query: string,
+  limit: number = 5,
+  origin?: LatLng,
+  maxKm: number = 15,
+): Promise<GeoCandidate[]> {
+  const cached = getGeocodeCache(tenantId, query);
+  if (cached && cached.length > 0) {
+    console.log(`[geo] caché hit para "${query}" (tenant ${tenantId})`);
+    return cached;
+  }
+
+  const fromGoogle = await searchGoogleGeocode(query, limit, origin, maxKm);
+  if (fromGoogle.length > 0) {
+    setGeocodeCache(tenantId, query, fromGoogle);
+    return fromGoogle;
+  }
+
+  const fromNominatim = await searchNominatim(query, limit, origin, maxKm);
+  if (fromNominatim.length > 0) {
+    setGeocodeCache(tenantId, query, fromNominatim);
+  }
+  return fromNominatim;
 }
 
 /**
