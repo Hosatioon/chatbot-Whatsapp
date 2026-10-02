@@ -1873,6 +1873,49 @@ export function searchProducts(
   return scored;
 }
 
+// Búsqueda "sugerencia" para cuando searchProducts (arriba, estricta — exige
+// TODAS las palabras) no encuentra nada. Acá basta con que coincida UNA
+// palabra significativa, para poder ofrecer algo parecido en vez de dejar
+// al cliente en un callejón sin salida.
+// Caso real (revisión de conversaciones de Cookliz, 2026-10-01): un
+// cliente preguntó por "torta de pandebono" y otro por "almojabana con
+// bocadillo y queso" — ninguna coincide con nada exacto, pero el negocio sí
+// tiene "Torta de almojabana" (comparte "torta"/"almojabana"). Sin esto, el
+// bot solo decía "no lo tenemos" y el pedido se perdía hasta que el dueño
+// entraba a mano a ofrecer la alternativa.
+export function searchProductsLoose(
+  tenantId: number,
+  query: string,
+  limit = 5,
+): Product[] {
+  const words = query
+    .toLowerCase()
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !SEARCH_STOPWORDS.has(w))
+    .map((w) => (w.endsWith("s") && w.length > 4 ? w.slice(0, -1) : w))
+    .map(normalizeForSearch);
+  if (words.length === 0) return [];
+
+  const allProducts = stmtAllActiveProducts.all(tenantId) as Product[];
+  return allProducts
+    .map((p) => {
+      const normName = normalizeForSearch(p.name);
+      let score = 0;
+      for (const word of words) {
+        if (normName.includes(word)) score += 1;
+      }
+      return { product: p, score };
+    })
+    .filter((s) => s.score > 0) // OR, no AND — una sola palabra ya cuenta
+    .sort(
+      (a, b) =>
+        b.score - a.score || a.product.name.localeCompare(b.product.name),
+    )
+    .slice(0, limit)
+    .map((s) => s.product);
+}
+
 const stmtGetProductByNameExact = db.prepare<[number, string], Product>(
   `SELECT * FROM products WHERE tenant_id = ? AND active = 1 AND LOWER(name) = ? LIMIT 1`,
 );

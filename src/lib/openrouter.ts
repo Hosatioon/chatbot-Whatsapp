@@ -6,6 +6,7 @@ import {
 import {
   getTopProducts,
   searchProducts,
+  searchProductsLoose,
   getProductByName,
   getProductStock,
   getTenantById,
@@ -1344,6 +1345,28 @@ async function executeTool(
       const query = String(args.query ?? "");
       const allResults = searchProducts(tenantId, query, 20);
       const results = allResults.slice(0, 5);
+
+      // Sin resultados exactos: antes esto devolvía products:[] sin nada
+      // más, y el LLM no tenía de dónde sacar una alternativa — solo podía
+      // decir "no lo tenemos" (ver comentario de searchProductsLoose en
+      // db.ts). Buscamos algo parecido por UNA sola palabra en común para
+      // poder ofrecerlo en vez de dejar al cliente en un callejón sin
+      // salida.
+      if (results.length === 0) {
+        const loose = searchProductsLoose(tenantId, query, 3);
+        return {
+          result: JSON.stringify({
+            products: [],
+            ...(loose.length > 0
+              ? {
+                  quizas_te_refieras_a: loose.map((p) => p.name),
+                  hint: `No hay un producto exacto para "${query}", pero estos se parecen: ${loose.map((p) => p.name).join(", ")}. Ofrecéselos al cliente como alternativa (ej: "No tengo exactamente eso, pero tengo X, ¿te sirve?") en vez de decir solo que no lo tenemos.`,
+                }
+              : {}),
+          }),
+        };
+      }
+
       return {
         result: JSON.stringify({
           products: results.map((p) => ({
@@ -1459,12 +1482,26 @@ async function executeTool(
         // recibió el link del catálogo completo al inicio de la
         // conversación — no hace falta que el bot lo repita por texto. Acá
         // solo va una muestra chica (5) para darle una idea rápida.
-        const available = getTopProducts(tenantId, 5);
+        //
+        // BUG real encontrado (2026-10-01): esa muestra era simplemente
+        // getTopProducts (los primeros 5 del catálogo, sin relación con lo
+        // pedido) — un cliente preguntó por "torta de pandebono" y "almojabana
+        // con bocadillo y queso", el bot dijo "no lo tenemos" sin más, cuando
+        // el negocio sí tenía "Torta de almojabana" (comparte palabras con
+        // ambos pedidos). Primero intentamos una sugerencia relacionada por
+        // palabra en común; solo si eso tampoco da nada, caemos a la muestra
+        // genérica de antes.
+        const loose = searchProductsLoose(tenantId, pname, 5);
+        const available =
+          loose.length > 0 ? loose : getTopProducts(tenantId, 5);
         return {
           result: JSON.stringify({
             error: `Producto no encontrado: ${pname}`,
             available_products: available.map((p) => p.name),
-            hint: "Dile al cliente que no tenemos ese producto. Como máximo mencioná estas 5 opciones de available_products como ejemplo — NUNCA listes más de 5. Ya le mandaste el link del catálogo al inicio de la conversación, así que no hace falta enumerar todo lo que hay: si quiere ver más, que revise el catálogo.",
+            hint:
+              loose.length > 0
+                ? `No hay un producto exacto para "${pname}", pero estos se parecen: ${available.map((p) => p.name).join(", ")}. Ofrecéselos como alternativa (ej: "No tengo exactamente eso, pero tengo X, ¿te sirve?") en vez de decir solo que no lo tenemos. NUNCA llames addItem vos mismo con esa alternativa — esperá a que el cliente confirme cuál quiere.`
+                : "Dile al cliente que no tenemos ese producto. Como máximo mencioná estas 5 opciones de available_products como ejemplo — NUNCA listes más de 5. Ya le mandaste el link del catálogo al inicio de la conversación, así que no hace falta enumerar todo lo que hay: si quiere ver más, que revise el catálogo.",
           }),
         };
       }
