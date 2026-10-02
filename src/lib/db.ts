@@ -125,6 +125,8 @@ export interface Tenant {
   min_delivery_price: number | null;
   bot_paused: number;
   paused_message: string | null;
+  active_promotion: string | null;
+  free_delivery_promo: number;
   created_at: number;
 }
 
@@ -772,6 +774,23 @@ if (!hasColumn("tenants", "admin_phone")) {
 // demasiado a una difusión y sube el riesgo de bloqueo de WhatsApp).
 if (!hasColumn("tenants", "admin_phone_2")) {
   db.exec("ALTER TABLE tenants ADD COLUMN admin_phone_2 TEXT");
+}
+// Promoción temporal (revisión de conversaciones reales, 2026-10-01): tres
+// veces en una semana el dueño tuvo que entrar a mano a avisar "tenemos
+// promo de aniversario, paga 3 lleva 4" / "el domicilio no se cobra" — el
+// bot no tenía forma de saberlo. active_promotion es texto libre que el
+// bot menciona cuando sea relevante (no cambia ningún cálculo — avisar de
+// "paga 3 lleva 4" no es lo mismo que calcular el descuento solo, eso
+// sigue necesitando que una persona confirme el valor final). El
+// domicilio gratis SÍ es un caso concreto y automatizable, por eso tiene
+// su propio toggle que de verdad pone el precio en $0.
+if (!hasColumn("tenants", "active_promotion")) {
+  db.exec("ALTER TABLE tenants ADD COLUMN active_promotion TEXT");
+}
+if (!hasColumn("tenants", "free_delivery_promo")) {
+  db.exec(
+    "ALTER TABLE tenants ADD COLUMN free_delivery_promo INTEGER NOT NULL DEFAULT 0",
+  );
 }
 if (!hasColumn("tenants", "delivery_price")) {
   db.exec("ALTER TABLE tenants ADD COLUMN delivery_price INTEGER");
@@ -1513,6 +1532,17 @@ export function setTenantAdminPhone2(
   phone: string | null,
 ): void {
   stmtSetAdminPhone2.run(phone, tenantId);
+}
+
+const stmtSetPromotion = db.prepare<[string | null, number, number]>(
+  "UPDATE tenants SET active_promotion = ?, free_delivery_promo = ? WHERE id = ?",
+);
+export function setTenantPromotion(
+  tenantId: number,
+  activePromotion: string | null,
+  freeDeliveryPromo: boolean,
+): void {
+  stmtSetPromotion.run(activePromotion, freeDeliveryPromo ? 1 : 0, tenantId);
 }
 
 // Conversaciones donde el bot mandó el resumen + "¿Confirmas...?" y el

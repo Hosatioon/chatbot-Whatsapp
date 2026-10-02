@@ -12,6 +12,7 @@ import {
   getTenantById,
   getLastOrderByPhone,
   createOrder,
+  setMode,
   type Message,
 } from "./db";
 import {
@@ -181,6 +182,7 @@ interface ToolResult {
   result: string;
   orderConfirmed?: boolean;
   orderId?: number;
+  humanRequested?: boolean;
 }
 
 /**
@@ -237,6 +239,7 @@ export async function generateReply(
   usage: LLMUsage;
   orderConfirmed: boolean;
   confirmedOrderId?: number;
+  humanRequested: boolean;
 }> {
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     {
@@ -315,6 +318,15 @@ export async function generateReply(
         name: "getOrderStatus",
         description:
           "Consultar el estado del último pedido del cliente. Úsala cuando el cliente pregunte por su pedido.",
+        parameters: { type: "object", properties: {} },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "requestHuman",
+        description:
+          "Llamala cuando el cliente pida EXPLÍCITAMENTE hablar con una persona/humano/asesor, diga que no quiere seguir hablando con un bot, o esté claramente frustrado y lo pida. Pasa la conversación a modo humano y avisa al negocio — vos seguís respondiendo este turno con un mensaje breve confirmando que ya le avisaste a alguien, nunca con un 'no puedo ayudarte con eso'.",
         parameters: { type: "object", properties: {} },
       },
     },
@@ -470,6 +482,7 @@ export async function generateReply(
 
   // Manejar tool calls (hasta 3 rondas)
   let orderConfirmed = false;
+  let humanRequested = false;
   let confirmedOrderId: number | undefined;
   let confirmedTotal: number | undefined;
   let confirmedPayment: string | undefined;
@@ -575,6 +588,9 @@ export async function generateReply(
         console.log(
           `[openrouter] tool ${fnName}(${JSON.stringify(args)}) → ${toolResult.result.slice(0, 200)}`,
         );
+        if (toolResult.humanRequested) {
+          humanRequested = true;
+        }
         if (toolResult.orderConfirmed) {
           orderConfirmed = true;
           confirmedOrderId = toolResult.orderId;
@@ -762,6 +778,9 @@ export async function generateReply(
             // Mismo registro que el loop principal: si esta ronda extra
             // llegó a confirmar el pedido o fijar el pago, no perder ese
             // estado (si no, el texto determinístico de abajo no se arma).
+            if (toolResult.humanRequested) {
+              humanRequested = true;
+            }
             if (toolResult.orderConfirmed) {
               orderConfirmed = true;
               confirmedOrderId = toolResult.orderId;
@@ -1322,6 +1341,7 @@ export async function generateReply(
     },
     orderConfirmed,
     confirmedOrderId,
+    humanRequested,
   };
 }
 
@@ -1452,6 +1472,25 @@ async function executeTool(
           ),
           notes: order.notes,
         }),
+      };
+    }
+    case "requestHuman": {
+      // Caso real (revisión de conversaciones, 2026-10-01): "¿Puedo hablar
+      // con una persona?" → "Entiendo, pero por ahora solo puedo ayudarte
+      // con pedidos..." — un callejón sin salida, el cliente se quedó sin
+      // saber qué hacer. Acá de verdad se pasa la conversación a modo
+      // Humano (como si alguien del negocio la hubiera tomado a mano desde
+      // el panel) y se avisa — el bot no vuelve a responder sola esta
+      // conversación hasta que alguien la regrese a modo IA.
+      if (ctx?.conversationId) {
+        setMode(tenantId, ctx.conversationId, "HUMAN");
+      }
+      return {
+        result: JSON.stringify({
+          success: true,
+          hint: "Ya se avisó al negocio y la conversación pasó a atención humana. Respondé ESTE turno con un mensaje breve y cordial confirmando que ya le avisaste a alguien del equipo y que en breve le escriben — NUNCA digas que no podés ayudar ni dejes la pregunta sin respuesta.",
+        }),
+        humanRequested: true,
       };
     }
     case "addItem": {
@@ -1890,6 +1929,7 @@ async function executeTool(
           km,
           pricePerKm,
           tenant.min_delivery_price ?? undefined,
+          tenant.free_delivery_promo === 1,
         );
 
         // El cliente mandó un pin de GPS — eso da coordenadas exactas pero
@@ -2044,6 +2084,7 @@ async function executeTool(
           km,
           pricePerKm,
           tenant.min_delivery_price ?? undefined,
+          tenant.free_delivery_promo === 1,
         );
 
         // Construir dirección completa: referencia + detalles
@@ -2131,6 +2172,7 @@ async function executeTool(
           km,
           pricePerKm,
           tenant.min_delivery_price ?? undefined,
+          tenant.free_delivery_promo === 1,
         );
 
         const fullAddress = resolution.details

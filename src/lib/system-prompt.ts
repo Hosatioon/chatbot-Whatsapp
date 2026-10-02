@@ -10,6 +10,7 @@ Hablas de forma natural, amable, breve y cálido. Primera persona. Español neut
 No usas lenguaje corporativo ni frases robóticas.
 Nunca digas que eres inteligencia artificial ni uses frases como "Estoy aquí para ayudarle" o "Será un placer".
 Si el cliente escribe por primera vez, saluda: "{GREETING}"
+Si el cliente pide EXPLÍCITAMENTE hablar con una persona/humano/asesor, o dice que no quiere seguir con un bot: llamá requestHuman. NUNCA respondas algo tipo "por ahora solo puedo ayudarte con pedidos" — eso deja al cliente sin saber qué hacer (bug real: pasó exactamente así y el cliente se quedó estancado).
 
 --- TU ROL ---
 Gestionas todo el flujo del pedido usando los tools disponibles.
@@ -191,6 +192,23 @@ export function buildSystemPromptForTenant(
 
   if (tenant?.business_address) {
     contextLines.push(`Dirección del negocio: ${tenant.business_address}`);
+  }
+
+  // Promoción temporal (ver tabla tenants.active_promotion): texto libre
+  // que el dueño prende/apaga desde Configuración. Es informativo — NO
+  // calcules ningún descuento vos mismo, el backend no sabe traducir
+  // "paga 3 lleva 4" a un número. Mencionala cuando sea natural (ej. al
+  // confirmar el pedido o si el cliente pregunta por precios/promos), sin
+  // forzarla en cada mensaje.
+  if (tenant?.active_promotion) {
+    contextLines.push(
+      `Promoción activa en este momento: "${tenant.active_promotion}". Mencionala cuando sea relevante (ej. al dar precios o confirmar el pedido), pero el valor final con el descuento aplicado lo revisa una persona del negocio — no inventes ni calcules vos el precio con descuento.`,
+    );
+  }
+  if (tenant?.free_delivery_promo === 1) {
+    contextLines.push(
+      "El domicilio está GRATIS mientras dure la promoción activa — el sistema ya calcula $0 automáticamente, no hace falta que lo menciones aparte salvo que el cliente pregunte cuánto cuesta el domicilio.",
+    );
   }
 
   if (tenant?.business_hours) {

@@ -51,6 +51,8 @@ interface TenantConfig {
   min_delivery_price: number | null;
   bot_paused: boolean;
   paused_message: string | null;
+  active_promotion: string | null;
+  free_delivery_promo: boolean;
 }
 
 const DAYS = [
@@ -93,6 +95,8 @@ const DEFAULT_CONFIG: TenantConfig = {
   min_delivery_price: null,
   bot_paused: false,
   paused_message: "",
+  active_promotion: "",
+  free_delivery_promo: false,
 };
 
 interface Props {
@@ -255,6 +259,8 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
         min_delivery_price: data.min_delivery_price ?? null,
         bot_paused: data.bot_paused ?? false,
         paused_message: data.paused_message ?? "",
+        active_promotion: data.active_promotion ?? "",
+        free_delivery_promo: data.free_delivery_promo ?? false,
       });
     } catch {
       setError("Error de conexión");
@@ -902,6 +908,58 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
                 cliente manda una dirección que no se puede geocodificar).
               </p>
             </div>
+          </div>
+        </section>
+
+        {/* Sección 5b: Promoción temporal */}
+        <section>
+          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-400">
+            Promoción temporal
+          </h3>
+          <div className="space-y-4">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">
+                Mensaje de promoción (opcional)
+              </label>
+              <textarea
+                value={config.active_promotion ?? ""}
+                onChange={(e) =>
+                  setConfig({ ...config, active_promotion: e.target.value })
+                }
+                placeholder='Ej: "Estamos de aniversario: paga 3 y lleva 4"'
+                rows={2}
+                className={inputClass}
+              />
+              <p className="mt-1 text-xs text-gray-400">
+                El bot la menciona cuando sea relevante (al dar precios o
+                confirmar un pedido). OJO: el bot avisa de la promo, pero NO
+                calcula el descuento solo — el valor final con el descuento
+                aplicado lo sigues confirmando tú, igual que ahora. Borra el
+                texto cuando se acabe la promoción.
+              </p>
+            </div>
+            <label className="flex cursor-pointer items-start gap-2">
+              <input
+                type="checkbox"
+                checked={config.free_delivery_promo}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    free_delivery_promo: e.target.checked,
+                  })
+                }
+                className="mt-0.5"
+              />
+              <span className="text-sm text-gray-700">
+                Domicilio gratis mientras dure la promoción
+                <span className="mt-0.5 block text-xs text-gray-400">
+                  A diferencia del mensaje de arriba, esto sí cambia el
+                  cálculo: el domicilio sale en $0 automáticamente, sin
+                  importar la distancia. Recuerda desactivarlo cuando termine
+                  la promoción.
+                </span>
+              </span>
+            </label>
           </div>
         </section>
 

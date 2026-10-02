@@ -3,6 +3,7 @@ import {
   getTenantById,
   updateTenantConfig,
   setTenantAdminPhone2,
+  setTenantPromotion,
   type TenantLink,
 } from "@/lib/db";
 import { requireAuth } from "@/lib/tenant";
@@ -86,6 +87,8 @@ export async function GET(req: NextRequest) {
     min_delivery_price: tenant.min_delivery_price,
     bot_paused: tenant.bot_paused === 1,
     paused_message: tenant.paused_message,
+    active_promotion: tenant.active_promotion,
+    free_delivery_promo: tenant.free_delivery_promo === 1,
   });
 }
 
@@ -188,6 +191,10 @@ export async function PUT(req: NextRequest) {
   const paused_message = String(body.paused_message ?? "")
     .trim()
     .slice(0, 300);
+  const active_promotion = String(body.active_promotion ?? "")
+    .trim()
+    .slice(0, 300);
+  const free_delivery_promo = !!body.free_delivery_promo;
 
   // Validar y serializar business_hours
   let business_hours_json: string | null = null;
@@ -278,6 +285,7 @@ export async function PUT(req: NextRequest) {
   });
 
   setTenantAdminPhone2(tenantId, admin_phone_2 || null);
+  setTenantPromotion(tenantId, active_promotion || null, free_delivery_promo);
 
   // Guardar lat/lng directamente en la BD
   if (business_lat !== null && business_lng !== null) {

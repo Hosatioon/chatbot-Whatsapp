@@ -747,6 +747,23 @@ async function handleSingleMessage(
       // Limpiar estado
       resetState(convo.id);
     }
+
+    // El cliente pidió hablar con una persona (tool requestHuman) — ya se
+    // pasó la conversación a modo Humano dentro de generateReply. Avisamos
+    // al panel con un título distinto al de "mensaje nuevo" normal, para
+    // que no se confunda con un chat cualquiera (bug real: antes esto no
+    // existía y el bot respondía un "no puedo ayudarte" sin que nadie del
+    // negocio se enterara de que alguien pedía atención humana).
+    if (result.humanRequested) {
+      void sendPushToTenant(tenantId, {
+        title: `🙋 ${pushName || phone} pide hablar con una persona`,
+        body: "Pasó a atención humana — el bot ya no le va a responder.",
+        tag: `convo-${convo.id}`,
+        url: "/?view=chats",
+      }).catch((e) =>
+        console.error("[bot] Error mandando push de solicitud de humano:", e),
+      );
+    }
   } catch (err) {
     llmSlot.release();
     console.error("[bot] Error llamando al LLM:", err);

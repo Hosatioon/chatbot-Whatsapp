@@ -546,7 +546,15 @@ export function calculateDeliveryPrice(
   km: number,
   pricePerKm: number,
   minPrice?: number,
+  freeDeliveryPromo?: boolean,
 ): number {
+  // Caso real (revisión de conversaciones, 2026-10-01): un negocio tuvo
+  // domicilio gratis por aniversario y el bot igual cobró $3.200 — el
+  // dueño tuvo que corregir el total a mano después de que el bot ya se
+  // lo había confirmado al cliente. Con el toggle activo, el precio es
+  // $0 sin importar distancia ni mínimo — se corta ANTES de cualquier
+  // cálculo, a propósito.
+  if (freeDeliveryPromo) return 0;
   const raw = Math.round(km * pricePerKm);
   const rounded = Math.round(raw / 100) * 100;
   if (minPrice && rounded < minPrice) return minPrice;
