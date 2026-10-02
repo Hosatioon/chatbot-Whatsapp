@@ -258,6 +258,45 @@ function extractText(msg: WAMessage): string | null {
   return null;
 }
 
+// BUG real encontrado (2026-10-01, revisión de conversaciones reales de
+// Cookliz): una imagen (ej. el comprobante de pago que el bot mismo pide al
+// confirmar un pedido por transferencia) no tiene texto que extractText
+// pueda leer, así que el mensaje se descartaba ENTERO — no quedaba ningún
+// rastro en el historial ni en el dashboard, como si el cliente nunca
+// hubiera escrito nada. El dueño del negocio solo se enteraba revisando
+// WhatsApp directamente, por fuera del panel. Esto da al menos una
+// etiqueta visible para loguear y acusar recibo (no interpretamos el
+// contenido de la imagen — eso requeriría un modelo con visión, que no es
+// lo que arma esta función).
+function extractMediaLabel(msg: WAMessage): string | null {
+  const m = msg.message;
+  if (!m) return null;
+
+  const withCaption = (emoji: string, label: string, caption?: string | null) =>
+    caption ? `${emoji} ${label}: "${caption}"` : `${emoji} ${label}`;
+
+  if (m.imageMessage) {
+    return withCaption("📎", "Imagen recibida", m.imageMessage.caption);
+  }
+  if (m.videoMessage) {
+    return withCaption("🎥", "Video recibido", m.videoMessage.caption);
+  }
+  if (m.documentMessage || m.documentWithCaptionMessage) {
+    const doc =
+      m.documentMessage ??
+      m.documentWithCaptionMessage?.message?.documentMessage;
+    const name = doc?.fileName ? ` (${doc.fileName})` : "";
+    return `📄 Documento recibido${name}`;
+  }
+  if (m.audioMessage) {
+    return m.audioMessage.ptt ? "🎤 Nota de voz recibida" : "🎵 Audio recibido";
+  }
+  if (m.stickerMessage) {
+    return "🏷️ Sticker recibido";
+  }
+  return null;
+}
+
 function jidToPhone(jid: string): string {
   const at = jid.indexOf("@");
   const base = at >= 0 ? jid.slice(0, at) : jid;
@@ -286,7 +325,14 @@ async function handleSingleMessage(
 ): Promise<void> {
   const remoteJid = msg.key.remoteJid;
   const fromMe = msg.key.fromMe;
-  const text = extractText(msg);
+  const extractedText = extractText(msg);
+  // Si no hay texto real, al menos dejamos una etiqueta visible para una
+  // imagen/audio/documento/sticker en vez de descartar el mensaje entero
+  // (ver extractMediaLabel). isMediaOnly marca que esto NO es una
+  // intención real del cliente, para no mandárselo al LLM como si lo fuera.
+  const mediaLabel = !extractedText ? extractMediaLabel(msg) : null;
+  const text = extractedText ?? mediaLabel;
+  const isMediaOnly = !extractedText && !!mediaLabel;
   const msgKeys = msg.message ? Object.keys(msg.message) : [];
 
   console.log(
@@ -416,6 +462,25 @@ async function handleSingleMessage(
     console.log(
       `[bot] Conversación en modo ${fresh?.mode ?? "?"}, no respondo`,
     );
+    return;
+  }
+
+  // Imagen/audio/documento/sticker sin texto: ya quedó logueado arriba y el
+  // dueño ya recibió el push — eso es lo que resuelve el bug (antes
+  // desaparecía sin dejar rastro). No lo mandamos al LLM: no tenemos forma
+  // de "ver" el contenido, y mandarle una etiqueta genérica como si fuera
+  // un mensaje de texto del cliente arriesga una respuesta inventada (ej.
+  // asumir que es un comprobante cuando capaz es otra cosa). En cambio,
+  // un acuse corto y determinístico para que el cliente sepa que llegó.
+  if (isMediaOnly) {
+    const ackMsg = "📎 Recibimos tu archivo, gracias. En un momento te confirmamos.";
+    const ackId = insertMessage(convo.id, "assistant", ackMsg, "pending");
+    await humanDelay(800, 2000);
+    try {
+      await sendTracked(sock, remoteJid, ackMsg, ackId);
+    } catch (e) {
+      console.error(`[bot:${tenantId}] Error enviando acuse de archivo:`, e);
+    }
     return;
   }
 
