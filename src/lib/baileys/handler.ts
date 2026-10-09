@@ -694,9 +694,9 @@ async function handleSingleMessage(
       const paymentInfo = tenant?.payment_info || "";
       let confirmMsg: string;
       if (convState.draft_payment === "efectivo") {
-        confirmMsg = `¡Pedido confirmado! 🎉\n\nTotal: $${total.toLocaleString("es-CO")}\n\nPago en efectivo. Tenga listo el monto exacto para la entrega 😋\n\n¿Algo más en lo que le pueda ayudar?`;
+        confirmMsg = `¡Pedido confirmado! 🎉\n\nTotal: $${total.toLocaleString("es-CO")}\n\nPago en efectivo. Ten listo el monto exacto para la entrega 😋\n\n¿Algo más en lo que te pueda ayudar?`;
       } else {
-        confirmMsg = `¡Pedido confirmado! 🎉\n\nTotal: $${total.toLocaleString("es-CO")}\n\n${paymentInfo}\n\nMándeme el comprobante cuando transfiera y le aviso cuando esté listo 😋`;
+        confirmMsg = `¡Pedido confirmado! 🎉\n\nTotal: $${total.toLocaleString("es-CO")}\n\n${paymentInfo}\n\nMándame el comprobante cuando transfieras y te aviso cuando esté listo 😋`;
       }
 
       // Enviar confirmación si el LLM no la incluyó en su reply
@@ -829,7 +829,7 @@ async function handleSingleMessage(
       const itemsList = result.products
         .map((p) => `- ${p.quantity}x ${p.name}`)
         .join("\n");
-      llmResponse.reply = `¡Listo! Anotadas:\n${itemsList}\n\n¿Quiere algo más?`;
+      llmResponse.reply = `¡Listo! Anotadas:\n${itemsList}\n\n¿Quieres algo más?`;
       console.log(
         `[bot:${tenantId}] Safety net agregó: ${result.products.map((p) => `${p.quantity}x ${p.name}`).join(", ")}`,
       );
@@ -855,9 +855,9 @@ async function handleSingleMessage(
         );
         const found = results[0];
         if (found.stock > 0) {
-          llmResponse.reply = `¡Sí lo tenemos! ${found.name} a $${found.price.toLocaleString("es-CO")}. ¿Le anoto alguno?`;
+          llmResponse.reply = `¡Sí lo tenemos! ${found.name} a $${found.price.toLocaleString("es-CO")}. ¿Te anoto alguno?`;
         } else {
-          llmResponse.reply = `Sí tenemos ${found.name} ($${found.price.toLocaleString("es-CO")}), pero momentaneamente sin stock. ¿Le ofrezco algo más?`;
+          llmResponse.reply = `Sí tenemos ${found.name} ($${found.price.toLocaleString("es-CO")}), pero momentaneamente sin stock. ¿Te ofrezco algo más?`;
         }
       }
     }
@@ -888,7 +888,7 @@ async function handleSingleMessage(
       console.warn(
         `[bot:${tenantId}] Safety net: LLM listó ${productCount} productos de memoria en vez de enviar catálogo — corrigiendo`,
       );
-      llmResponse.reply = `Le dejo el catálogo para que le eche un ojo 👇\n${catalogUrl}`;
+      llmResponse.reply = `Te dejo el catálogo para que le eches un ojo 👇\n${catalogUrl}`;
     }
   }
 
@@ -907,9 +907,9 @@ async function handleSingleMessage(
     // Releer estado actualizado (los tools pueden haberlo cambiado)
     const freshState = getStateForConversation(convo.id, tenantId);
     if (freshState.draft_items.length === 0) {
-      llmResponse.reply = "¿Qué le gustaría pedir?";
+      llmResponse.reply = "¿Qué te gustaría pedir?";
     } else if (!freshState.draft_delivery_method) {
-      llmResponse.reply = "¿Es para domicilio o lo recoge en tienda?";
+      llmResponse.reply = "¿Es para domicilio o lo recoges en tienda?";
     } else if (
       freshState.draft_delivery_method === "domicilio" &&
       !freshState.draft_address
@@ -921,7 +921,7 @@ async function handleSingleMessage(
       const subtotal = computeDraftTotal(freshState.draft_items);
       const deliveryPrice = freshState.draft_delivery_price ?? 0;
       const total = subtotal + deliveryPrice;
-      llmResponse.reply = `Total: $${total.toLocaleString("es-CO")}. ¿Confirma el pedido?`;
+      llmResponse.reply = `Total: $${total.toLocaleString("es-CO")}. ¿Confirmas el pedido?`;
     }
   }
 
@@ -931,7 +931,7 @@ async function handleSingleMessage(
   // preguntando algo. Separarla en su propio mensaje hace que salte a la
   // vista que el bot está esperando una respuesta, como haría una persona
   // real (manda el resumen, y en un mensaje aparte pregunta "¿confirmas?").
-  const CONFIRM_SUFFIX = /\s*¿Confirma el pedido\?\s*$/;
+  const CONFIRM_SUFFIX = /\s*¿Confirmas? el pedido\?\s*$/;
   let confirmFollowUp: string | null = null;
   if (CONFIRM_SUFFIX.test(llmResponse.reply)) {
     llmResponse.reply = llmResponse.reply.replace(CONFIRM_SUFFIX, "");

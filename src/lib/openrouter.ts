@@ -975,7 +975,7 @@ export async function generateReply(
         lines.push("Quité:");
         for (const a of removed) lines.push(`- ${a.quantity}x ${a.name}`);
       }
-      lines.push("", "¿Quiere algo más?");
+      lines.push("", "¿Quieres algo más?");
       parsed.reply = lines.join("\n");
     }
   }
@@ -994,13 +994,13 @@ export async function generateReply(
     lines.push(`Total: $${(confirmedTotal ?? 0).toLocaleString("es-CO")}`);
     if (confirmedPayment === "transferencia" && tenant?.payment_info) {
       lines.push("", `Datos para transferencia: ${tenant.payment_info}`);
-      lines.push("Mándenos el comprobante cuando transfiera.");
+      lines.push("Mándanos el comprobante cuando transfieras.");
     }
-    lines.push("", "¡Gracias por su compra! 😊");
+    lines.push("", "¡Gracias por tu compra! 😊");
     parsed.reply = lines.join("\n");
   } else if (paymentSummary) {
     // setPayment se ejecutó: el resumen sale EXACTO del backend, una sola vez
-    parsed.reply = `${paymentSummary}\n\n¿Confirma el pedido?`;
+    parsed.reply = `${paymentSummary}\n\n¿Confirmas el pedido?`;
   } else if (ambiguousAddressReply) {
     // setAddress devolvió varias opciones con link de mapa cada una — se
     // manda el texto armado en el backend tal cual, para no arriesgar que
@@ -1113,7 +1113,10 @@ export async function generateReply(
     const isAlreadyAskingMethod =
       r.includes("domicilio o lo recoge") ||
       r.includes("domicilio o recoge") ||
-      r.includes("recoge en tienda");
+      r.includes("recoge en tienda") ||
+      r.includes("domicilio o lo recoges") ||
+      r.includes("domicilio o recoges") ||
+      r.includes("recoges en tienda");
 
     // BUG real encontrado (2026-09-17): "isAlreadyAskingMethod" existe para
     // no pisar una pregunta legítima del LLM cuando la señal de domicilio es
@@ -1229,7 +1232,9 @@ export async function generateReply(
       r.includes("¿transferencia o efectivo?") ||
       r.includes("transferencia o efectivo?") ||
       r.includes("¿cómo va a pagar") ||
-      r.includes("como va a pagar");
+      r.includes("como va a pagar") ||
+      r.includes("¿cómo vas a pagar") ||
+      r.includes("como vas a pagar");
 
     // SAFETY NET: si el LLM dice "confirmado" sin haber llamado confirmOrder
     // y falta el pago, detectar el método de pago del mensaje del cliente
@@ -1239,6 +1244,7 @@ export async function generateReply(
       r.includes("ha sido confirmado") ||
       r.includes("pedido confirmado") ||
       r.includes("gracias por su compra") ||
+      r.includes("gracias por tu compra") ||
       r.includes("gracias por elegir");
 
     if (saysConfirmed && ctx.lastCustomerMessage) {
@@ -1267,7 +1273,7 @@ export async function generateReply(
         try {
           const parsedResult = JSON.parse(payResult.result);
           if (parsedResult.success && parsedResult.summary) {
-            parsed.reply = `${parsedResult.summary}\n\n¿Confirma el pedido?`;
+            parsed.reply = `${parsedResult.summary}\n\n¿Confirmas el pedido?`;
           } else if (parsedResult.error) {
             parsed.reply = `¿Transferencia o efectivo?`;
           }
@@ -1290,7 +1296,7 @@ export async function generateReply(
       try {
         const parsedResult = JSON.parse(payResult.result);
         if (parsedResult.success && parsedResult.summary) {
-          parsed.reply = `${parsedResult.summary}\n\n¿Confirma el pedido?`;
+          parsed.reply = `${parsedResult.summary}\n\n¿Confirmas el pedido?`;
         }
       } catch {
         // si falla, dejar la respuesta del LLM
@@ -1322,10 +1328,11 @@ export async function generateReply(
     if (
       r.includes("resumen") ||
       r.includes("confirma el pedido") ||
+      r.includes("confirmas el pedido") ||
       r.includes("total:")
     ) {
       const summary = buildOrderSummaryForCustomer(ctx.conversationState);
-      parsed.reply = `${summary}\n\n¿Confirma el pedido?`;
+      parsed.reply = `${summary}\n\n¿Confirmas el pedido?`;
     }
   }
 
@@ -2277,7 +2284,7 @@ async function executeTool(
         return {
           result: JSON.stringify({
             error:
-              "Todavía no se puede fijar el pago: falta el método de entrega. Pregunta primero: ¿Es para domicilio o lo recoge en tienda?",
+              "Todavía no se puede fijar el pago: falta el método de entrega. Pregunta primero: ¿Es para domicilio o lo recoges en tienda?",
             next: "setDeliveryMethod",
           }),
         };
@@ -2321,7 +2328,7 @@ async function executeTool(
           success: true,
           payment: method,
           summary: buildOrderSummaryForCustomer(ctx.conversationState),
-          next: "Enviar el resumen del campo 'summary' EXACTAMENTE como está (sin agregar ni quitar nada), seguido de: ¿Confirma el pedido?",
+          next: "Enviar el resumen del campo 'summary' EXACTAMENTE como está (sin agregar ni quitar nada), seguido de: ¿Confirmas el pedido?",
         }),
       };
     }
