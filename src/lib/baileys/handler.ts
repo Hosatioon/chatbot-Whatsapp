@@ -140,36 +140,23 @@ function isAdminNumber(
 // el texto un poco distinto y una pausa de unos segundos entre los dos, para
 // no parecer una difusión del mismo mensaje idéntico a varios destinatarios
 // (que es justo lo que los antispam de WhatsApp miran).
-async function notifyAdminNumbers(opts: {
-  tenantId: number;
-  adminNumbers: string[];
-  orderId: number;
-  customerLabel: string;
-  total: number;
-  viewToken: string | null;
-}): Promise<void> {
-  const { tenantId, adminNumbers, orderId, customerLabel, total, viewToken } =
-    opts;
+// Envía un mensaje de WhatsApp (del bot mismo) a cada número de
+// notificación que ya "activó" (le escribió primero al bot al menos una
+// vez — sin eso no hay conversación donde encolar el mensaje). Compartido
+// por notifyAdminNumbers (pedido nuevo) y notifyAdminNumbersHumanRequest
+// (cliente pide un humano) — ambos necesitan la misma garantía real: un
+// push del navegador se puede perder (permiso no dado, celular en silencio,
+// pestaña cerrada), un WhatsApp al número que el dueño ya usa todos los
+// días no.
+async function sendToActivatedAdminNumbers(
+  tenantId: number,
+  adminNumbers: string[],
+  buildText: (sentIndex: number) => string,
+  logLabel: string,
+): Promise<void> {
   if (adminNumbers.length === 0) return;
-
-  const dashboardUrl =
-    process.env.DASHBOARD_URL || process.env.NEXTAUTH_URL || "";
-  const base = dashboardUrl.replace(/\/$/, "");
-  // Link directo a ESTE pedido (token, sirve sin login — ver
-  // src/app/o/[token]/page.tsx); si no hay token, al módulo de pedidos.
-  const link = base
-    ? viewToken
-      ? `${base}/o/${viewToken}`
-      : `${base}/?view=orders`
-    : "";
-  const money = `$${total.toLocaleString("es-CO")}`;
-  const variants = [
-    `🔔 Nuevo pedido #${orderId}\nCliente: ${customerLabel}\nTotal: ${money}${link ? `\nVer: ${link}` : ""}`,
-    `🛎️ Entró el pedido #${orderId} · ${customerLabel}\nTotal: ${money}${link ? `\nDetalle: ${link}` : ""}`,
-  ];
-
   let sentCount = 0;
-  for (const [i, num] of adminNumbers.entries()) {
+  for (const num of adminNumbers) {
     const adminConvo = findConversationByPhoneSuffix(tenantId, num);
     if (!adminConvo) {
       console.log(
@@ -187,7 +174,7 @@ async function notifyAdminNumbers(opts: {
       continue;
     }
     if (sentCount > 0) await humanDelay(4000, 9000);
-    const text = variants[i % variants.length];
+    const text = buildText(sentCount);
     const messageId = insertMessage(adminConvo.id, "assistant", text, "pending");
     enqueueOutbox(
       tenantId,
@@ -198,10 +185,69 @@ async function notifyAdminNumbers(opts: {
       messageId,
     );
     sentCount++;
-    console.log(
-      `[bot:${tenantId}] Notificación de pedido #${orderId} encolada para ${num}`,
-    );
+    console.log(`[bot:${tenantId}] ${logLabel} encolado para ${num}`);
   }
+}
+
+async function notifyAdminNumbers(opts: {
+  tenantId: number;
+  adminNumbers: string[];
+  orderId: number;
+  customerLabel: string;
+  total: number;
+  viewToken: string | null;
+}): Promise<void> {
+  const { tenantId, adminNumbers, orderId, customerLabel, total, viewToken } =
+    opts;
+
+  const dashboardUrl =
+    process.env.DASHBOARD_URL || process.env.NEXTAUTH_URL || "";
+  const base = dashboardUrl.replace(/\/$/, "");
+  // Link directo a ESTE pedido (token, sirve sin login — ver
+  // src/app/o/[token]/page.tsx); si no hay token, al módulo de pedidos.
+  const link = base
+    ? viewToken
+      ? `${base}/o/${viewToken}`
+      : `${base}/?view=orders`
+    : "";
+  const money = `$${total.toLocaleString("es-CO")}`;
+  const variants = [
+    `🔔 Nuevo pedido #${orderId}\nCliente: ${customerLabel}\nTotal: ${money}${link ? `\nVer: ${link}` : ""}`,
+    `🛎️ Entró el pedido #${orderId} · ${customerLabel}\nTotal: ${money}${link ? `\nDetalle: ${link}` : ""}`,
+  ];
+  await sendToActivatedAdminNumbers(
+    tenantId,
+    adminNumbers,
+    (i) => variants[i % variants.length],
+    `Notificación de pedido #${orderId}`,
+  );
+}
+
+// Pedido explícito del dueño (2026-10-10): el único aviso de "cliente pide
+// un humano" era un push del navegador — si el dueño no tenía el panel con
+// permiso de notificaciones, o el celular estaba en silencio, no se
+// enteraba. Igual que con los pedidos nuevos, mandamos también un WhatsApp
+// directo a los números de notificación ya activados — es el canal que el
+// dueño SIEMPRE revisa, a diferencia de un push que puede pasar inadvertido.
+async function notifyAdminNumbersHumanRequest(
+  tenantId: number,
+  adminNumbers: string[],
+  customerLabel: string,
+): Promise<void> {
+  const dashboardUrl =
+    process.env.DASHBOARD_URL || process.env.NEXTAUTH_URL || "";
+  const base = dashboardUrl.replace(/\/$/, "");
+  const link = base ? `${base}/?view=chats` : "";
+  const variants = [
+    `🙋 ${customerLabel} pide hablar con una persona — el bot ya no le va a responder.${link ? `\nVer chat: ${link}` : ""}`,
+    `🙋 Atención: ${customerLabel} necesita que alguien del equipo le responda ya mismo.${link ? `\n${link}` : ""}`,
+  ];
+  await sendToActivatedAdminNumbers(
+    tenantId,
+    adminNumbers,
+    (i) => variants[i % variants.length],
+    "Aviso de solicitud de humano",
+  );
 }
 
 // Construir el bloque de links programático (sin IA)
@@ -797,6 +843,16 @@ async function handleSingleMessage(
         url: "/?view=chats",
       }).catch((e) =>
         console.error("[bot] Error mandando push de solicitud de humano:", e),
+      );
+      void notifyAdminNumbersHumanRequest(
+        tenantId,
+        getAdminNumbers(tenant),
+        String(pushName || phone),
+      ).catch((notifErr) =>
+        console.error(
+          `[bot:${tenantId}] Error notificando solicitud de humano:`,
+          notifErr,
+        ),
       );
     }
   } catch (err) {
