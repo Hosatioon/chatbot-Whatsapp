@@ -256,6 +256,20 @@ function extractText(msg: WAMessage): string | null {
       return `Ubicación GPS: https://maps.google.com/?q=${lat},${lng}`;
     }
   }
+  // BUG real encontrado (2026-10-10): una imagen/video con una pregunta
+  // real en el caption (ej. foto de un producto + "¿esto tiene gluten?")
+  // caía siempre en isMediaOnly → acuse genérico, sin que el LLM viera
+  // NUNCA el caption. No podemos ver la imagen, pero el caption sí es
+  // texto real del cliente — se lo pasamos anotado para que sepa que le
+  // falta contexto visual, en vez de ignorar la pregunta por completo.
+  const imageCaption = m.imageMessage?.caption;
+  if (typeof imageCaption === "string" && imageCaption.trim().length > 0) {
+    return `[el cliente envió una imagen que no puedo ver, con este texto] ${imageCaption}`;
+  }
+  const videoCaption = m.videoMessage?.caption;
+  if (typeof videoCaption === "string" && videoCaption.trim().length > 0) {
+    return `[el cliente envió un video que no puedo ver, con este texto] ${videoCaption}`;
+  }
   return null;
 }
 
