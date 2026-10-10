@@ -28,6 +28,7 @@ import {
   getConfirmReminderCandidates,
 } from "../db";
 import { generateReply, type LLMResponse } from "../openrouter";
+import { transcribeVoiceNote } from "../voice-transcription";
 import { buildOrderSummaryForCustomer } from "../system-prompt";
 import { sendPushToTenant } from "../push";
 import { sendTextWithSafePreview } from "./send";
@@ -331,8 +332,8 @@ async function handleSingleMessage(
   // (ver extractMediaLabel). isMediaOnly marca que esto NO es una
   // intención real del cliente, para no mandárselo al LLM como si lo fuera.
   const mediaLabel = !extractedText ? extractMediaLabel(msg) : null;
-  const text = extractedText ?? mediaLabel;
-  const isMediaOnly = !extractedText && !!mediaLabel;
+  let text = extractedText ?? mediaLabel;
+  let isMediaOnly = !extractedText && !!mediaLabel;
   const msgKeys = msg.message ? Object.keys(msg.message) : [];
 
   console.log(
@@ -366,6 +367,26 @@ async function handleSingleMessage(
   }
   if (msg.key.id) {
     markMessageProcessed(msg.key.id);
+  }
+
+  // Nota de voz: transcribirla con Groq Whisper para que el bot la entienda
+  // como si fuera texto, Y guardar el audio original en disco para poder
+  // escucharlo desde el panel si la transcripción se equivoca — sin esto,
+  // no hay forma de saber si el cliente habló raro o si Whisper se la
+  // inventó. Si falla (Groq caído, sin crédito, etc.), queda el acuse
+  // genérico de siempre — nunca se bloquea el flujo por esto.
+  let audioUrl: string | null = null;
+  const audioMsg = msg.message?.audioMessage;
+  if (!extractedText && audioMsg?.ptt) {
+    const transcribed = await transcribeVoiceNote(tenantId, sock, msg);
+    if (transcribed) {
+      text = transcribed.text;
+      isMediaOnly = false;
+      audioUrl = transcribed.audioUrl;
+      console.log(`[bot:${tenantId}] Nota de voz transcrita (${text.length} chars)`);
+    } else {
+      console.warn(`[bot:${tenantId}] No se pudo transcribir la nota de voz`);
+    }
   }
 
   const phone = jidToPhone(remoteJid);
@@ -440,7 +461,7 @@ async function handleSingleMessage(
 
   // Por privacidad: no loguear el texto completo. Solo metadatos.
   console.log(`[bot:${tenantId}] ← Mensaje de ${phone} (${text.length} chars)`);
-  insertMessage(convo.id, "user", text);
+  insertMessage(convo.id, "user", text, null, audioUrl);
 
   // Push a los dispositivos del panel (PC/celular) — no depende de si la
   // conversación está en modo IA o Humano, porque justamente en modo

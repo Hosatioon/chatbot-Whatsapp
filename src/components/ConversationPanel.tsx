@@ -198,6 +198,7 @@ export default function ConversationPanel({
               content={m.content}
               createdAt={m.created_at}
               deliveryStatus={m.delivery_status}
+              audioUrl={m.audio_url}
             />
           ))
         )}

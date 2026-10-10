@@ -7,6 +7,10 @@ interface Props {
   // Solo los mensajes que salen por WhatsApp (bot/humano) traen estado; los
   // del cliente y los viejos (de antes de los chulitos) vienen null.
   deliveryStatus?: DeliveryStatus | null;
+  // Notas de voz del cliente ya transcritas: ruta relativa, se pide a
+  // /api/audio/<audioUrl>. Permite escuchar el audio original si la
+  // transcripción automática se equivocó.
+  audioUrl?: string | null;
 }
 
 const STATUS_LABEL: Record<DeliveryStatus, string> = {
@@ -73,6 +77,7 @@ export default function MessageBubble({
   content,
   createdAt,
   deliveryStatus,
+  audioUrl,
 }: Props) {
   const isUser = role === "user";
   const isHuman = role === "human";
@@ -98,6 +103,19 @@ export default function MessageBubble({
         <div className="mb-0.5 text-[10px] uppercase tracking-wider text-gray-500">
           {label}
         </div>
+        {audioUrl && (
+          <div className="mb-1 flex items-center gap-1.5 text-[10px] text-gray-500">
+            <span title="Nota de voz transcrita automáticamente — escuchá el audio si la transcripción no cuadra">
+              🎤 Nota de voz
+            </span>
+            <audio
+              controls
+              preload="none"
+              src={`/api/audio/${audioUrl}`}
+              className="h-6 max-w-[180px]"
+            />
+          </div>
+        )}
         <div className="whitespace-pre-wrap break-words text-sm">{content}</div>
         <div className="mt-1 flex items-center justify-end gap-1 text-[10px] text-gray-500">
           <span>{formatTime(createdAt)}</span>

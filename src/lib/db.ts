@@ -169,6 +169,11 @@ export interface Message {
   created_at: number;
   wa_message_id: string | null;
   delivery_status: DeliveryStatus | null;
+  // Notas de voz del cliente: ruta relativa servida por /api/audio/<audio_url>
+  // (ver transcribeVoiceNote) — permite escuchar el audio original si la
+  // transcripción de Groq se equivocó. NULL en todo lo que no sea una nota
+  // de voz transcrita.
+  audio_url: string | null;
 }
 
 export type ConversationStateName =
@@ -290,7 +295,7 @@ export interface TenantDailyUsage {
 // y comparte via WAL)
 // ---------------------------------------------------------------------------
 
-const dataDir = path.resolve(process.cwd(), "data");
+export const dataDir = path.resolve(process.cwd(), "data");
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
@@ -455,6 +460,12 @@ if (!columnExists("messages", "wa_message_id")) {
 }
 if (!columnExists("messages", "delivery_status")) {
   db.exec(`ALTER TABLE messages ADD COLUMN delivery_status TEXT`);
+}
+// Nota de voz transcrita (ver transcribeVoiceNote): ruta relativa del audio
+// original guardado en disco, para poder escucharlo desde el panel si la
+// transcripción automática se equivocó.
+if (!columnExists("messages", "audio_url")) {
+  db.exec(`ALTER TABLE messages ADD COLUMN audio_url TEXT`);
 }
 // Vincula cada fila de la cola con el mensaje visible en el dashboard, para
 // poder marcarlo enviado / no enviado.
@@ -1180,8 +1191,10 @@ export function setMode(
 // Mensajes
 // ---------------------------------------------------------------------------
 
-const stmtInsertMessage = db.prepare<[number, Role, string, string | null]>(
-  "INSERT INTO messages (conversation_id, role, content, delivery_status) VALUES (?, ?, ?, ?)",
+const stmtInsertMessage = db.prepare<
+  [number, Role, string, string | null, string | null]
+>(
+  "INSERT INTO messages (conversation_id, role, content, delivery_status, audio_url) VALUES (?, ?, ?, ?, ?)",
 );
 const stmtTouchConvo = db.prepare<[number]>(
   "UPDATE conversations SET last_message_at = unixepoch() WHERE id = ?",
@@ -1193,12 +1206,14 @@ const txInsertMessage = db.transaction(
     role: Role,
     content: string,
     deliveryStatus: DeliveryStatus | null,
+    audioUrl: string | null,
   ): number => {
     const info = stmtInsertMessage.run(
       conversationId,
       role,
       content,
       deliveryStatus,
+      audioUrl,
     );
     stmtTouchConvo.run(conversationId);
     return Number(info.lastInsertRowid);
@@ -1208,13 +1223,22 @@ const txInsertMessage = db.transaction(
 // `deliveryStatus`: pasar "pending" en los mensajes que de verdad se van a
 // mandar por WhatsApp (bot / humano) para que el dashboard les muestre
 // chulitos; los del cliente y los internos se quedan en NULL.
+// `audioUrl`: solo en notas de voz del cliente ya transcritas (ver
+// transcribeVoiceNote) — ruta relativa servida por /api/audio/.
 export function insertMessage(
   conversationId: number,
   role: Role,
   content: string,
   deliveryStatus: DeliveryStatus | null = null,
+  audioUrl: string | null = null,
 ): number {
-  return txInsertMessage(conversationId, role, content, deliveryStatus);
+  return txInsertMessage(
+    conversationId,
+    role,
+    content,
+    deliveryStatus,
+    audioUrl,
+  );
 }
 
 // --- Estado de entrega de mensajes (chulitos) ---------------------------
