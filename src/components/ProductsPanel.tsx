@@ -53,6 +53,11 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  // Errores de guardar/borrar/activar un producto — antes solo iban a
+  // console.error y el dueño no se enteraba (el bot seguía cotizando con
+  // el precio/stock viejo sin que nadie lo supiera). Mismo patrón visual
+  // que importError, de abajo.
+  const [actionError, setActionError] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{
     open: boolean;
     id: number | null;
@@ -131,6 +136,7 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
     if (!form.name.trim()) return;
     const stockNum = parseInt(form.stock, 10);
     const priceNum = parseInt(form.price, 10);
+    setActionError(null);
     try {
       const payload = {
         name: form.name,
@@ -139,23 +145,31 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
         description: form.description.trim() || undefined,
         tenantId: selectedTenantId > 0 ? selectedTenantId : undefined,
       };
-      if (editingRow === "new") {
-        await fetch("/api/products", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-      } else if (typeof editingRow === "number") {
-        await fetch("/api/products", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: editingRow, ...payload }),
-        });
+      const res =
+        editingRow === "new"
+          ? await fetch("/api/products", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            })
+          : await fetch("/api/products", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id: editingRow, ...payload }),
+            });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || "No se pudo guardar el producto.");
       }
       await fetchProducts();
       setEditingRow(null);
     } catch (err) {
       console.error("Error guardando producto:", err);
+      setActionError(
+        err instanceof Error
+          ? err.message
+          : "No se pudo guardar el producto. Intentá de nuevo.",
+      );
     }
   };
 
@@ -170,6 +184,7 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
   const handleDelete = async () => {
     const id = deleteConfirm.id;
     if (!id) return;
+    setActionError(null);
     try {
       const tenantId = selectedTenantId > 0 ? selectedTenantId : undefined;
       const res = await fetch("/api/products", {
@@ -178,27 +193,38 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
         body: JSON.stringify({ id, tenantId }),
       });
       if (!res.ok) {
-        console.error("Error eliminando producto:", await res.text());
+        const text = await res.text();
+        console.error("Error eliminando producto:", text);
+        setActionError("No se pudo borrar el producto. Intentá de nuevo.");
+      } else {
+        await fetchProducts();
       }
-      await fetchProducts();
     } catch (err) {
       console.error("Error eliminando producto:", err);
+      setActionError("No se pudo borrar el producto. Intentá de nuevo.");
     } finally {
       closeDeleteModal();
     }
   };
 
   const handleToggle = async (id: number, current: number) => {
+    setActionError(null);
     try {
       const tenantId = selectedTenantId > 0 ? selectedTenantId : undefined;
-      await fetch("/api/products", {
+      const res = await fetch("/api/products", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, active: current === 0, tenantId }),
       });
+      if (!res.ok) {
+        throw new Error("No se pudo actualizar el producto.");
+      }
       await fetchProducts();
     } catch (err) {
       console.error("Error toggling producto:", err);
+      setActionError(
+        "No se pudo activar/desactivar el producto. Intentá de nuevo.",
+      );
     }
   };
 
@@ -265,6 +291,20 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
           </button>
         </div>
       </div>
+
+      {actionError && (
+        <div className="flex items-start justify-between rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+          <div>
+            <strong>Error:</strong> {actionError}
+          </div>
+          <button
+            onClick={() => setActionError(null)}
+            className="ml-3 text-red-600 hover:text-red-800"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Banner de resultado de importación */}
       {importError && (

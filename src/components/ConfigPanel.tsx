@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   subscribeThisDevice,
   detectPushStatus,
@@ -101,10 +101,23 @@ const DEFAULT_CONFIG: TenantConfig = {
 
 interface Props {
   selectedTenantId?: number;
+  // BUG real (2026-10-10): este panel es un formulario de ~1200 líneas con
+  // un solo botón "Guardar" al final. ConnectionGate desmontaba este
+  // componente al cambiar de pestaña sin avisar — cualquier cambio sin
+  // guardar se perdía en silencio y el dueño creía que había guardado.
+  // Avisamos al padre cada vez que hay cambios sin guardar para que pueda
+  // confirmar antes de desmontar.
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
-export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
+export default function ConfigPanel({
+  selectedTenantId = 0,
+  onDirtyChange,
+}: Props) {
   const [config, setConfig] = useState<TenantConfig>(DEFAULT_CONFIG);
+  // Snapshot de la última versión cargada/guardada del servidor — comparar
+  // `config` contra esto es lo que define "hay cambios sin guardar".
+  const savedConfigRef = useRef<TenantConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -123,6 +136,24 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
 
   useEffect(() => {
     setSelectedSoundState(getSelectedSound());
+  }, []);
+
+  // Avisa al padre (ConnectionGate) si hay cambios sin guardar, para que
+  // pueda confirmar antes de desmontar este panel (ver comentario de
+  // onDirtyChange arriba). No marca "dirty" mientras está cargando ni
+  // antes de tener el primer snapshot del servidor.
+  useEffect(() => {
+    if (loading || !savedConfigRef.current) return;
+    const dirty =
+      JSON.stringify(config) !== JSON.stringify(savedConfigRef.current);
+    onDirtyChange?.(dirty);
+  }, [config, loading, onDirtyChange]);
+
+  // Si el componente se desmonta igual (ej. el usuario confirmó salir sin
+  // guardar), avisamos que ya no hay nada "dirty" pendiente.
+  useEffect(() => {
+    return () => onDirtyChange?.(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleSoundChange(id: NotificationSoundId) {
@@ -234,7 +265,7 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
         return;
       }
       const data = (await res.json()) as Partial<TenantConfig>;
-      setConfig({
+      const loaded: TenantConfig = {
         business_name: data.business_name ?? "",
         business_type: data.business_type ?? "",
         payment_info: data.payment_info ?? "",
@@ -261,7 +292,9 @@ export default function ConfigPanel({ selectedTenantId = 0 }: Props) {
         paused_message: data.paused_message ?? "",
         active_promotion: data.active_promotion ?? "",
         free_delivery_promo: data.free_delivery_promo ?? false,
-      });
+      };
+      setConfig(loaded);
+      savedConfigRef.current = loaded;
     } catch {
       setError("Error de conexión");
     } finally {

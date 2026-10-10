@@ -10,6 +10,7 @@ import ConversationPanel from "./ConversationPanel";
 import ProductsPanel from "./ProductsPanel";
 import OrdersPanel from "./OrdersPanel";
 import ConfigPanel from "./ConfigPanel";
+import ConfirmDialog from "./ConfirmDialog";
 import OperationsCenter from "./OperationsCenter";
 import PushNotificationSetup from "./PushNotificationSetup";
 import { playNotificationSound } from "@/lib/notification-sound";
@@ -89,6 +90,22 @@ export default function ConnectionGate() {
   });
   const [selectedTenantId, setSelectedTenantId] =
     useState<number>(getStoredTenantId);
+
+  // BUG real (2026-10-10): ConfigPanel es un formulario largo con un solo
+  // botón "Guardar" al final, y antes se desmontaba sin avisar en cuanto
+  // se cambiaba de pestaña — cualquier cambio sin guardar se perdía en
+  // silencio. configDirty lo levanta ConfigPanel vía onDirtyChange;
+  // pendingView guarda a dónde se quería ir mientras se confirma.
+  const [configDirty, setConfigDirty] = useState(false);
+  const [pendingView, setPendingView] = useState<View | null>(null);
+
+  function requestViewChange(next: View) {
+    if (view === "config" && configDirty && next !== "config") {
+      setPendingView(next);
+      return;
+    }
+    setView(next);
+  }
 
   // Polling estado de conexión cada 2s. Si el super-admin seleccionó un tenant,
   // consultamos el estado de ESE tenant; si no, el del usuario.
@@ -290,7 +307,7 @@ export default function ConnectionGate() {
           return (
             <button
               key={tab.key}
-              onClick={() => setView(tab.key)}
+              onClick={() => requestViewChange(tab.key)}
               title={tab.label}
               className={`flex flex-1 flex-col items-center justify-center gap-1 py-2.5 text-[11px] font-medium transition-all duration-200 sm:flex-none sm:flex-row sm:gap-1.5 sm:rounded-lg sm:px-3 sm:py-1.5 sm:text-sm ${
                 isActive
@@ -393,7 +410,7 @@ export default function ConnectionGate() {
                 </a>
 
                 <button
-                  onClick={() => setView("chats")}
+                  onClick={() => requestViewChange("chats")}
                   className="group flex items-center gap-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm text-left transition-all hover:border-emerald-300 hover:shadow-md"
                 >
                   <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
@@ -422,7 +439,7 @@ export default function ConnectionGate() {
                 </button>
 
                 <button
-                  onClick={() => setView("ops")}
+                  onClick={() => requestViewChange("ops")}
                   className="group flex items-center gap-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm text-left transition-all hover:border-emerald-300 hover:shadow-md"
                 >
                   <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-violet-50 text-violet-600">
@@ -451,7 +468,7 @@ export default function ConnectionGate() {
                 </button>
 
                 <button
-                  onClick={() => setView("orders")}
+                  onClick={() => requestViewChange("orders")}
                   className="group flex items-center gap-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm text-left transition-all hover:border-emerald-300 hover:shadow-md"
                 >
                   <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-rose-50 text-rose-600">
@@ -480,7 +497,7 @@ export default function ConnectionGate() {
                 </button>
 
                 <button
-                  onClick={() => setView("config")}
+                  onClick={() => requestViewChange("config")}
                   className="group flex items-center gap-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm text-left transition-all hover:border-emerald-300 hover:shadow-md"
                 >
                   <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gray-100 text-gray-600">
@@ -577,6 +594,7 @@ export default function ConnectionGate() {
             <ConfigPanel
               key={selectedTenantId}
               selectedTenantId={selectedTenantId}
+              onDirtyChange={setConfigDirty}
             />
           </main>
         ) : (
@@ -585,6 +603,20 @@ export default function ConnectionGate() {
           </main>
         )}
       </div>
+      <ConfirmDialog
+        open={pendingView !== null}
+        title="Tenés cambios sin guardar"
+        description="Si salís de Configuración ahora, se van a perder. ¿Salir igual?"
+        confirmText="Salir sin guardar"
+        cancelText="Seguir editando"
+        destructive
+        onConfirm={() => {
+          if (pendingView) setView(pendingView);
+          setPendingView(null);
+          setConfigDirty(false);
+        }}
+        onCancel={() => setPendingView(null)}
+      />
     </div>
   );
 }

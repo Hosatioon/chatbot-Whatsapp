@@ -133,9 +133,17 @@ export default function QRScreen({ status, qrPng }: Props) {
 
         {status === "disconnected" && secondsDisconnected > 10 && (
           <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-            El bot no respondió en {secondsDisconnected}s. Verificá que el
-            proceso del bot esté corriendo (<code>npm run start:bot</code>) y
-            mirá los logs de la terminal.
+            Perdimos la conexión con WhatsApp hace {secondsDisconnected}s. Esto
+            puede pasar si el teléfono se quedó sin internet o sin batería —
+            probá "Reintentar conexión" arriba. Si el problema sigue después
+            de unos minutos,{" "}
+            <a
+              href="mailto:soporte@ordifast.com"
+              className="font-medium underline hover:text-amber-900"
+            >
+              contactá a soporte
+            </a>
+            .
           </div>
         )}
       </div>
