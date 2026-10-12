@@ -1980,10 +1980,23 @@ export function searchProductsLoose(
       const normName = normalizeForSearch(p.name);
       const normKeywords = normalizeForSearch(p.keywords ?? "");
       let score = 0;
-      for (const word of words) {
-        if (normName.includes(word)) score += 1;
-        if (normKeywords.includes(word)) score += 1;
-      }
+      words.forEach((word, i) => {
+        // La primera palabra significativa de la consulta suele ser la
+        // CATEGORÍA/tipo de producto ("galleta de chocolate" → "galleta" es
+        // el tipo, "chocolate" el sabor/modificador — mismo patrón en
+        // cualquier rubro: "tenis para correr", "camiseta azul"). Cuando
+        // nada matchea TODAS las palabras (si no, ya lo resolvió
+        // searchProducts arriba), preferimos acercarnos por categoría antes
+        // que por un modificador suelto.
+        // Bug real: "galleta de chocolate" sin match exacto devolvía
+        // "Croissant de chocolate" en vez de alguna galleta — con peso
+        // plano, ambos matcheaban 1 sola palabra por igual y el desempate
+        // alfabético ("Croissant" < "Galleta") ganaba por pura casualidad de
+        // letra inicial, sin ninguna relación con qué tan relevante era.
+        const weight = i === 0 ? 2 : 1;
+        if (normName.includes(word)) score += weight;
+        if (normKeywords.includes(word)) score += weight;
+      });
       return { product: p, score };
     })
     .filter((s) => s.score > 0) // OR, no AND — una sola palabra ya cuenta
