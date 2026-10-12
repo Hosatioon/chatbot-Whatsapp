@@ -244,6 +244,7 @@ export interface Product {
   active: number;
   description: string | null;
   variants: ProductVariant[] | null;
+  keywords: string | null;
   created_at: number;
 }
 
@@ -552,6 +553,16 @@ if (!columnExists("products", "description")) {
 // Migración idempotente: variants en products (JSON: [{name, price, stock?}])
 if (!columnExists("products", "variants")) {
   db.exec(`ALTER TABLE products ADD COLUMN variants TEXT`);
+}
+
+// Migración idempotente: keywords en products (texto libre, palabras separadas
+// por coma/espacio). El matching de searchProducts es literal por palabra —
+// esto le da al dueño un lugar para escribir sinónimos/conceptos que el
+// nombre del producto no trae (ej: producto de marca "Nutella" sin la
+// palabra "chocolate" en ningún lado, o un modelo de tenis sin la palabra
+// "correr"). Se pondera igual que el nombre en la búsqueda.
+if (!columnExists("products", "keywords")) {
+  db.exec(`ALTER TABLE products ADD COLUMN keywords TEXT`);
 }
 
 // Multi-tenant: agregar tenant_id a tablas operacionales (default = 1).
@@ -1698,31 +1709,31 @@ export function deleteConversation(
 // ---------------------------------------------------------------------------
 
 const stmtListProducts = db.prepare<[number], Product>(
-  "SELECT id, tenant_id, name, price, stock, active, description, created_at, variants FROM products WHERE tenant_id = ? ORDER BY active DESC, name ASC",
+  "SELECT id, tenant_id, name, price, stock, active, description, created_at, variants, keywords FROM products WHERE tenant_id = ? ORDER BY active DESC, name ASC",
 );
 
 const stmtGetProductById = db.prepare<[number], Product>(
-  "SELECT id, tenant_id, name, price, stock, active, description, created_at, variants FROM products WHERE id = ?",
+  "SELECT id, tenant_id, name, price, stock, active, description, created_at, variants, keywords FROM products WHERE id = ?",
 );
 
 const stmtGetProductByIdScoped = db.prepare<[number, number], Product>(
-  "SELECT id, tenant_id, name, price, stock, active, description, created_at, variants FROM products WHERE id = ? AND tenant_id = ?",
+  "SELECT id, tenant_id, name, price, stock, active, description, created_at, variants, keywords FROM products WHERE id = ? AND tenant_id = ?",
 );
 
 const stmtGetActiveProducts = db.prepare<[number], Product>(
-  "SELECT id, tenant_id, name, price, stock, active, description, created_at, variants FROM products WHERE tenant_id = ? AND active = 1 ORDER BY name COLLATE NOCASE ASC",
+  "SELECT id, tenant_id, name, price, stock, active, description, created_at, variants, keywords FROM products WHERE tenant_id = ? AND active = 1 ORDER BY name COLLATE NOCASE ASC",
 );
 
 const stmtInsertProduct = db.prepare<
-  [number, string, number, number, number, string | null, string | null]
+  [number, string, number, number, number, string | null, string | null, string | null]
 >(
-  "INSERT INTO products (tenant_id, name, price, stock, active, description, variants) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  "INSERT INTO products (tenant_id, name, price, stock, active, description, variants, keywords) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 );
 
 const stmtUpdateProduct = db.prepare<
-  [string, number, number, number, string | null, string | null, number, number]
+  [string, number, number, number, string | null, string | null, string | null, number, number]
 >(
-  "UPDATE products SET name = ?, price = ?, stock = ?, active = ?, description = ?, variants = ? WHERE id = ? AND tenant_id = ?",
+  "UPDATE products SET name = ?, price = ?, stock = ?, active = ?, description = ?, variants = ?, keywords = ? WHERE id = ? AND tenant_id = ?",
 );
 
 const stmtDeleteProduct = db.prepare<[number, number]>(
@@ -1755,6 +1766,7 @@ export function createProduct(
   stock: number,
   description?: string | null,
   variants?: ProductVariant[] | null,
+  keywords?: string | null,
 ): Product {
   const variantsJson =
     variants && variants.length > 0 ? JSON.stringify(variants) : null;
@@ -1766,6 +1778,7 @@ export function createProduct(
     1, // Activo por defecto; stock 0 no implica inactivo
     description ?? null,
     variantsJson,
+    keywords?.trim() || null,
   );
   const product = getProductById(Number(info.lastInsertRowid));
   if (!product) throw new Error("No se pudo crear el producto");
@@ -1780,6 +1793,7 @@ export function updateProduct(
   stock: number,
   description?: string | null,
   variants?: ProductVariant[] | null,
+  keywords?: string | null,
 ): void {
   const variantsJson =
     variants && variants.length > 0 ? JSON.stringify(variants) : null;
@@ -1796,6 +1810,7 @@ export function updateProduct(
     active,
     description ?? null,
     variantsJson,
+    keywords?.trim() || null,
     id,
     tenantId,
   );
@@ -1892,8 +1907,10 @@ export function searchProducts(
       .filter((w) => w.length >= 2);
     if (fallbackWords.length === 0) return [];
     const fbWord = normalizeForSearch(fallbackWords[0]);
-    return (stmtAllActiveProducts.all(tenantId) as Product[]).filter((p) =>
-      normalizeForSearch(p.name).includes(fbWord),
+    return (stmtAllActiveProducts.all(tenantId) as Product[]).filter(
+      (p) =>
+        normalizeForSearch(p.name).includes(fbWord) ||
+        normalizeForSearch(p.keywords ?? "").includes(fbWord),
     );
   }
 
@@ -1909,9 +1926,15 @@ export function searchProducts(
     .map((p) => {
       const normName = normalizeForSearch(p.name);
       const normDesc = normalizeForSearch(p.description ?? "");
+      const normKeywords = normalizeForSearch(p.keywords ?? "");
       let score = 0;
       for (const word of words) {
         if (normName.includes(word)) score += 2;
+        // keywords: sinónimos/conceptos que el dueño carga a mano para que el
+        // producto aparezca aunque el cliente no use la palabra exacta del
+        // nombre (ej: producto de marca sin la palabra que describe su uso).
+        // Mismo peso que el nombre — es tan intencional como el nombre mismo.
+        if (normKeywords.includes(word)) score += 2;
         if (normDesc.includes(word)) score += 1;
       }
       return { product: p, score };
@@ -1955,9 +1978,11 @@ export function searchProductsLoose(
   return allProducts
     .map((p) => {
       const normName = normalizeForSearch(p.name);
+      const normKeywords = normalizeForSearch(p.keywords ?? "");
       let score = 0;
       for (const word of words) {
         if (normName.includes(word)) score += 1;
+        if (normKeywords.includes(word)) score += 1;
       }
       return { product: p, score };
     })

@@ -16,6 +16,7 @@ interface Product {
   active: number;
   description: string | null;
   variants: ProductVariant[] | null;
+  keywords: string | null;
   created_at: number;
 }
 
@@ -49,6 +50,7 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
     price: "",
     stock: "",
     description: "",
+    keywords: "",
   });
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
@@ -114,7 +116,7 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
 
   const handleAdd = () => {
     setEditingRow("new");
-    setForm({ name: "", price: "", stock: "", description: "" });
+    setForm({ name: "", price: "", stock: "", description: "", keywords: "" });
   };
 
   const handleEdit = (p: Product) => {
@@ -124,12 +126,13 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
       price: String(p.price),
       stock: String(p.stock),
       description: p.description ?? "",
+      keywords: p.keywords ?? "",
     });
   };
 
   const handleCancel = () => {
     setEditingRow(null);
-    setForm({ name: "", price: "", stock: "", description: "" });
+    setForm({ name: "", price: "", stock: "", description: "", keywords: "" });
   };
 
   const handleSave = async () => {
@@ -143,6 +146,7 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
         price: isNaN(priceNum) ? 0 : priceNum,
         stock: isNaN(stockNum) ? 0 : stockNum,
         description: form.description.trim() || undefined,
+        keywords: form.keywords.trim() || undefined,
         tenantId: selectedTenantId > 0 ? selectedTenantId : undefined,
       };
       const res =
@@ -422,6 +426,16 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
                     placeholder="Descripción"
                     className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
                   />
+                  <input
+                    type="text"
+                    value={form.keywords}
+                    onChange={(e) =>
+                      setForm({ ...form, keywords: e.target.value })
+                    }
+                    placeholder="Palabras clave (ej: chocolate, dulce)"
+                    title="Para que el bot encuentre este producto aunque el cliente no use el nombre exacto — útil si el producto se llama por marca/modelo."
+                    className="mt-1 w-full rounded border border-gray-200 px-2 py-1 text-xs text-gray-600"
+                  />
                 </td>
                 <td className="border-b border-r border-gray-200 px-4 py-2">
                   <input
@@ -493,6 +507,16 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
                       placeholder="Descripción"
                       className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
                     />
+                    <input
+                      type="text"
+                      value={form.keywords}
+                      onChange={(e) =>
+                        setForm({ ...form, keywords: e.target.value })
+                      }
+                      placeholder="Palabras clave (ej: chocolate, dulce)"
+                      title="Para que el bot encuentre este producto aunque el cliente no use el nombre exacto — útil si el producto se llama por marca/modelo."
+                      className="mt-1 w-full rounded border border-gray-200 px-2 py-1 text-xs text-gray-600"
+                    />
                   </td>
                   <td className="border-b border-r border-gray-200 px-4 py-2">
                     <input
@@ -559,6 +583,14 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
                     title={p.description ?? undefined}
                   >
                     {p.description || "—"}
+                    {p.keywords && (
+                      <div
+                        className="mt-0.5 truncate text-xs text-gray-400"
+                        title={`Palabras clave: ${p.keywords}`}
+                      >
+                        🔑 {p.keywords}
+                      </div>
+                    )}
                   </td>
                   <td className="border-b border-r border-gray-200 px-4 py-2.5 text-right font-medium text-gray-700">
                     {formatPrice(p.price)}

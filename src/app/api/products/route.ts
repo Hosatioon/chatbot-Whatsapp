@@ -18,6 +18,7 @@ const CreateBody = z.object({
   price: z.number().int().nonnegative(),
   stock: z.number().int().nonnegative(),
   description: z.string().trim().max(500).optional(),
+  keywords: z.string().trim().max(300).optional(),
   variants: z
     .array(
       z.object({
@@ -100,11 +101,20 @@ export async function POST(req: Request) {
       price,
       stock,
       description,
+      keywords,
       variants,
       tenantId: bodyTenantId,
     } = parsed.data;
     const target = resolveTenantId(tenantId, isSuperAdmin, bodyTenantId);
-    const product = createProduct(target, name, price, stock, description, variants ?? null);
+    const product = createProduct(
+      target,
+      name,
+      price,
+      stock,
+      description,
+      variants ?? null,
+      keywords ?? null,
+    );
     return NextResponse.json(product, { status: 201 });
   } catch (e) {
     return handleErr(e);
@@ -129,11 +139,21 @@ export async function PUT(req: Request) {
       price,
       stock,
       description,
+      keywords,
       variants,
       tenantId: bodyTenantId,
     } = parsed.data;
     const target = resolveTenantId(tenantId, isSuperAdmin, bodyTenantId);
-    updateProduct(target, id, name, price, stock, description, variants ?? null);
+    updateProduct(
+      target,
+      id,
+      name,
+      price,
+      stock,
+      description,
+      variants ?? null,
+      keywords ?? null,
+    );
     return NextResponse.json({ success: true });
   } catch (e) {
     return handleErr(e);
