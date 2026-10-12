@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import type { ConversationListItem, Mode } from "@/lib/db";
 import QRScreen, { type StatusResponse } from "./QRScreen";
+import DisconnectedNotice from "./DisconnectedNotice";
 import DashboardHeader from "./DashboardHeader";
 import ConversationList from "./ConversationList";
 import ConversationPanel from "./ConversationPanel";
@@ -202,7 +203,7 @@ export default function ConnectionGate() {
   const botDisconnected = status !== "connected";
 
   if (botDisconnected && !isSuperAdmin) {
-    return <QRScreen status={status} qrPng={qrPng} />;
+    return <DisconnectedNotice />;
   }
 
   const TAB_ICONS: Record<View, string> = {

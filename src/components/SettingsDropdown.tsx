@@ -109,22 +109,24 @@ export default function SettingsDropdown({
               <ThemeSelector />
             </div>
 
-            {/* Conexión */}
-            <div className="mb-4">
-              <div className="mb-2 text-sm font-semibold text-slate-800">
-                Conexión
+            {/* Conexión: solo super admin maneja sesiones/números */}
+            {isSuperAdmin && (
+              <div className="mb-4">
+                <div className="mb-2 text-sm font-semibold text-slate-800">
+                  Conexión
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setConfirmDisconnect(true)}
+                  disabled={pendingDisconnect}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-left text-sm font-medium text-slate-700 hover:bg-gray-50 disabled:opacity-60"
+                >
+                  {pendingDisconnect
+                    ? "Desconectando..."
+                    : "Desconectar WhatsApp"}
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setConfirmDisconnect(true)}
-                disabled={pendingDisconnect}
-                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-left text-sm font-medium text-slate-700 hover:bg-gray-50 disabled:opacity-60"
-              >
-                {pendingDisconnect
-                  ? "Desconectando..."
-                  : "Desconectar WhatsApp"}
-              </button>
-            </div>
+            )}
 
             {/* Admin */}
             {isSuperAdmin && (
