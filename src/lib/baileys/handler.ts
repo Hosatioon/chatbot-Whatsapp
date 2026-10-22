@@ -95,12 +95,28 @@ async function sendTracked(
   jid: string,
   text: string,
   messageId: number | null,
+  // Si se pasa, un fallo de envío (socket caído un instante, muy común —
+  // ver MAX_RECONNECT_RETRIES) no deja al cliente sin respuesta: se encola
+  // en el mismo outbox con reintento que ya usan los avisos al dueño
+  // (processOutbox, tick cada 2s, vence a los 10 min si sigue sin poder
+  // salir). Antes esto era un fallo definitivo y silencioso.
+  retryCtx?: { tenantId: number; conversationId: number; phone: string },
 ): Promise<void> {
   try {
     const waId = await sendTextWithSafePreview(sock, jid, text);
     if (messageId) markMessageSent(messageId, waId);
   } catch (e) {
     if (messageId) markMessageFailed(messageId);
+    if (retryCtx) {
+      enqueueOutbox(
+        retryCtx.tenantId,
+        retryCtx.conversationId,
+        retryCtx.phone,
+        text,
+        jid,
+        messageId,
+      );
+    }
     throw e;
   }
 }
@@ -386,7 +402,17 @@ async function handleSingleMessage(
 ): Promise<void> {
   const remoteJid = msg.key.remoteJid;
   const fromMe = msg.key.fromMe;
-  const extractedText = extractText(msg);
+  // Tope de tamaño por mensaje: WhatsApp permite textos de hasta ~65k
+  // caracteres, y sin este corte un solo mensaje gigante entraba entero al
+  // LLM — no bypassea el rate-limit de frecuencia (sigue siendo un único
+  // mensaje), pero sí era un vector de gasto grande de presupuesto de IA de
+  // un solo golpe.
+  const MAX_MESSAGE_CHARS = 3000;
+  const extractedTextRaw = extractText(msg);
+  const extractedText =
+    extractedTextRaw && extractedTextRaw.length > MAX_MESSAGE_CHARS
+      ? extractedTextRaw.slice(0, MAX_MESSAGE_CHARS)
+      : extractedTextRaw;
   // Si no hay texto real, al menos dejamos una etiqueta visible para una
   // imagen/audio/documento/sticker en vez de descartar el mensaje entero
   // (ver extractMediaLabel). isMediaOnly marca que esto NO es una
@@ -554,11 +580,36 @@ async function handleSingleMessage(
   // asumir que es un comprobante cuando capaz es otra cosa). En cambio,
   // un acuse corto y determinístico para que el cliente sepa que llegó.
   if (isMediaOnly) {
-    const ackMsg = "📎 Recibimos tu archivo, gracias. En un momento te confirmamos.";
+    // Un sticker no amerita respuesta — ni es un intento de comunicar algo
+    // ni necesita acuse de "archivo recibido" (suena raro para un sticker).
+    // El push al dueño ya se mandó arriba, así que no se pierde el aviso.
+    if (msg.message?.stickerMessage) {
+      return;
+    }
+
+    // Si justo estábamos esperando el comprobante de una transferencia
+    // (pedido ya CONFIRMED, pago elegido "transferencia") y lo que llega es
+    // una imagen, es razonable asumir que es el comprobante — pero el bot
+    // no puede "ver" la imagen, así que el mensaje NO afirma que el pago ya
+    // quedó confirmado, solo que la recibimos y alguien del negocio la va
+    // a revisar.
+    const convStateForAck = getStateForConversation(convo.id, tenantId);
+    const looksLikePaymentProof =
+      !!msg.message?.imageMessage &&
+      convStateForAck.state === "CONFIRMED" &&
+      convStateForAck.draft_payment === "transferencia";
+
+    const ackMsg = looksLikePaymentProof
+      ? "📸 ¡Recibimos tu comprobante! En un momento el negocio lo revisa y te confirma."
+      : "📎 Recibimos tu archivo, gracias. En un momento te confirmamos.";
     const ackId = insertMessage(convo.id, "assistant", ackMsg, "pending");
     await humanDelay(800, 2000);
     try {
-      await sendTracked(sock, remoteJid, ackMsg, ackId);
+      await sendTracked(sock, remoteJid, ackMsg, ackId, {
+        tenantId,
+        conversationId: convo.id,
+        phone,
+      });
     } catch (e) {
       console.error(`[bot:${tenantId}] Error enviando acuse de archivo:`, e);
     }
@@ -584,7 +635,11 @@ async function handleSingleMessage(
     const adminInfoMsgId = insertMessage(convo.id, "assistant", adminInfoMsg, "pending");
     await humanDelay(500, 1200);
     try {
-      await sendTracked(sock, remoteJid, adminInfoMsg, adminInfoMsgId);
+      await sendTracked(sock, remoteJid, adminInfoMsg, adminInfoMsgId, {
+        tenantId,
+        conversationId: convo.id,
+        phone,
+      });
       console.log(
         `[bot:${tenantId}] → Mensaje informativo enviado al número de notificaciones ${phone}`,
       );
@@ -605,7 +660,11 @@ async function handleSingleMessage(
     const pausedMsgId = insertMessage(convo.id, "assistant", pausedMsg, "pending");
     await humanDelay(1000, 3000);
     try {
-      await sendTracked(sock, remoteJid, pausedMsg, pausedMsgId);
+      await sendTracked(sock, remoteJid, pausedMsg, pausedMsgId, {
+        tenantId,
+        conversationId: convo.id,
+        phone,
+      });
       console.log(`[bot:${tenantId}] → Mensaje de pausa enviado a ${phone}`);
     } catch (e) {
       console.error(`[bot] Error enviando mensaje de pausa:`, e);
@@ -623,7 +682,11 @@ async function handleSingleMessage(
       const oohMsgId = insertMessage(convo.id, "assistant", oohMsg, "pending");
       await humanDelay(1000, 3000);
       try {
-        await sendTracked(sock, remoteJid, oohMsg, oohMsgId);
+        await sendTracked(sock, remoteJid, oohMsg, oohMsgId, {
+          tenantId,
+          conversationId: convo.id,
+          phone,
+        });
         console.log(`[bot] → Mensaje fuera de horario enviado a ${phone}`);
       } catch (e) {
         console.error(`[bot] Error enviando mensaje fuera de horario:`, e);
@@ -645,7 +708,11 @@ async function handleSingleMessage(
     const greeting = tenant.custom_greeting;
     const greetingId = insertMessage(convo.id, "assistant", greeting, "pending");
     try {
-      await sendTracked(sock, remoteJid, greeting, greetingId);
+      await sendTracked(sock, remoteJid, greeting, greetingId, {
+        tenantId,
+        conversationId: convo.id,
+        phone,
+      });
       console.log(`[bot] → Saludo personalizado enviado a ${phone}`);
     } catch (e) {
       console.error(`[bot] Error enviando saludo:`, e);
@@ -657,7 +724,11 @@ async function handleSingleMessage(
       await humanDelay(500, 1500);
       const linksMsgId = insertMessage(convo.id, "assistant", linksMsg, "pending");
       try {
-        await sendTracked(sock, remoteJid, linksMsg, linksMsgId);
+        await sendTracked(sock, remoteJid, linksMsg, linksMsgId, {
+          tenantId,
+          conversationId: convo.id,
+          phone,
+        });
         console.log(`[bot] → Catálogo enviado a ${phone}`);
       } catch (e) {
         console.error(`[bot] Error enviando catálogo:`, e);
@@ -676,7 +747,11 @@ async function handleSingleMessage(
       "En este momento te atenderá una persona del equipo. ¡Gracias por tu paciencia!";
     const budgetMsgId = insertMessage(convo.id, "assistant", budgetMsg, "pending");
     try {
-      await sendTracked(sock, remoteJid, budgetMsg, budgetMsgId);
+      await sendTracked(sock, remoteJid, budgetMsg, budgetMsgId, {
+        tenantId,
+        conversationId: convo.id,
+        phone,
+      });
     } catch (e) {
       console.error("[bot] Error enviando mensaje de presupuesto:", e);
     }
@@ -789,7 +864,11 @@ async function handleSingleMessage(
         const confirmMsgId = insertMessage(convo.id, "assistant", confirmMsg, "pending");
         await humanDelay(1000, 3000);
         try {
-          await sendTracked(sock, remoteJid, confirmMsg, confirmMsgId);
+          await sendTracked(sock, remoteJid, confirmMsg, confirmMsgId, {
+            tenantId,
+            conversationId: convo.id,
+            phone,
+          });
           console.log(`[bot] → Confirmación de pedido enviada a ${phone}`);
         } catch (e) {
           console.error(`[bot] Error enviando confirmación:`, e);
@@ -874,7 +953,11 @@ async function handleSingleMessage(
       "Ups, tuve un problema procesando tu mensaje. ¿Me lo puedes repetir de otra forma? O si prefieres, te conecto con una persona del equipo.";
     const fallbackMsgId = insertMessage(convo.id, "assistant", fallbackMsg, "pending");
     try {
-      await sendTracked(sock, remoteJid, fallbackMsg, fallbackMsgId);
+      await sendTracked(sock, remoteJid, fallbackMsg, fallbackMsgId, {
+        tenantId,
+        conversationId: convo.id,
+        phone,
+      });
     } catch (e) {
       console.error("[bot] Error enviando mensaje de fallback:", e);
     }
@@ -1056,7 +1139,11 @@ async function handleSingleMessage(
     console.log(`[bot] Enviando respuesta LLM a ${phone}...`);
 
     try {
-      await sendTracked(sock, remoteJid, llmResponse.reply, replyMsgId);
+      await sendTracked(sock, remoteJid, llmResponse.reply, replyMsgId, {
+        tenantId,
+        conversationId: convo.id,
+        phone,
+      });
       console.log(`[bot] → Enviado a ${phone}`);
     } catch (err) {
       console.error(`[bot] Error enviando a ${phone}:`, err);
@@ -1076,7 +1163,11 @@ async function handleSingleMessage(
         confirmFollowUp,
         "pending",
       );
-      await sendTracked(sock, remoteJid, confirmFollowUp, confirmId);
+      await sendTracked(sock, remoteJid, confirmFollowUp, confirmId, {
+        tenantId,
+        conversationId: convo.id,
+        phone,
+      });
       console.log(`[bot] → Pregunta de confirmación enviada a ${phone}`);
     } catch (err) {
       console.error(`[bot] Error enviando confirmación a ${phone}:`, err);
@@ -1099,7 +1190,11 @@ async function handleSingleMessage(
           linksMsg,
           "pending",
         );
-        await sendTracked(sock, remoteJid, linksMsg, catalogMsgId);
+        await sendTracked(sock, remoteJid, linksMsg, catalogMsgId, {
+          tenantId,
+          conversationId: convo.id,
+          phone,
+        });
         console.log(`[bot] → Catálogo enviado a ${phone}`);
       } catch (err) {
         console.error(`[bot] Error enviando catálogo a ${phone}:`, err);
@@ -1200,7 +1295,11 @@ export async function processConfirmReminders(
       "pending",
     );
     try {
-      await sendTracked(sock, jid, CONFIRM_REMINDER_TEXT, messageId);
+      await sendTracked(sock, jid, CONFIRM_REMINDER_TEXT, messageId, {
+        tenantId,
+        conversationId: c.id,
+        phone: c.phone,
+      });
       console.log(
         `[bot:${tenantId}] → Recordatorio de confirmación enviado (conversación ${c.id})`,
       );

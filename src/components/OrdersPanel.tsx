@@ -783,28 +783,63 @@ export default function OrdersPanel({
               </div>
 
               {/* Cambiar estado */}
-              {canChangeStatus && (
-                <div className="bg-white rounded-lg p-4">
-                  <h4 className="text-sm font-medium text-slate-900 mb-3">
-                    Cambiar estado
-                  </h4>
-                  <div className="flex flex-wrap gap-2">
-                    {ORDER_STATUSES.filter(
-                      (s) => s !== selectedOrder.status,
-                    ).map((status) => (
-                      <button
-                        key={status}
-                        onClick={() =>
-                          handleStatusChange(selectedOrder.id, status)
-                        }
-                        className={`px-3 py-2 rounded-lg text-xs font-medium border transition-opacity ${STATUS_COLORS[status]} hover:opacity-80`}
-                      >
-                        {STATUS_LABELS[status]}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {canChangeStatus &&
+                (() => {
+                  const flowIdx = FLOW_STATUSES.indexOf(
+                    selectedOrder.status,
+                  );
+                  const nextStatus =
+                    flowIdx >= 0 && flowIdx < FLOW_STATUSES.length - 1
+                      ? FLOW_STATUSES[flowIdx + 1]
+                      : null;
+                  const otherStatuses = ORDER_STATUSES.filter(
+                    (s) =>
+                      s !== selectedOrder.status &&
+                      s !== "CANCELLED" &&
+                      s !== nextStatus,
+                  );
+                  return (
+                    <div className="bg-white rounded-lg p-4">
+                      <h4 className="text-sm font-medium text-slate-900 mb-3">
+                        Cambiar estado
+                      </h4>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {nextStatus && (
+                          <button
+                            onClick={() =>
+                              handleStatusChange(selectedOrder.id, nextStatus)
+                            }
+                            className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-700"
+                          >
+                            Avanzar a {STATUS_LABELS[nextStatus]}
+                            <span aria-hidden="true">→</span>
+                          </button>
+                        )}
+                        {otherStatuses.map((status) => (
+                          <button
+                            key={status}
+                            onClick={() =>
+                              handleStatusChange(selectedOrder.id, status)
+                            }
+                            className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-opacity ${STATUS_COLORS[status]} hover:opacity-80`}
+                          >
+                            {STATUS_LABELS[status]}
+                          </button>
+                        ))}
+                      </div>
+                      {selectedOrder.status !== "CANCELLED" && (
+                        <button
+                          onClick={() =>
+                            handleStatusChange(selectedOrder.id, "CANCELLED")
+                          }
+                          className="mt-3 text-xs font-medium text-red-600 transition hover:text-red-700 hover:underline"
+                        >
+                          Cancelar pedido
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
 
               {/* Items */}
               <div className="bg-white rounded-lg p-4">

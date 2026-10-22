@@ -265,7 +265,7 @@ export default function ProductsPanel({ selectedTenantId }: Props) {
   }
 
   return (
-    <div className="flex flex-col gap-4 p-4">
+    <div className="flex flex-col gap-4 p-4 animate-fade-in">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-slate-900">Productos</h2>
         <div className="flex items-center gap-2">

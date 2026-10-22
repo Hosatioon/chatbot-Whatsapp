@@ -11,6 +11,13 @@ interface Props {
   selectedTenantId: number;
 }
 
+interface LlmUsage {
+  dailyCostUsd: number;
+  monthlyCostUsd: number;
+  exceeded: boolean;
+  budgets: { dailyUsd: number; monthlyUsd: number };
+}
+
 export default function SettingsDropdown({
   phone,
   onDisconnected,
@@ -20,8 +27,21 @@ export default function SettingsDropdown({
   const [pendingDisconnect, setPendingDisconnect] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const [confirmSignOut, setConfirmSignOut] = useState(false);
+  const [usage, setUsage] = useState<LlmUsage | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const { data: session } = useSession();
+
+  // Cargar presupuesto de IA al abrir — así el dueño se entera ANTES de que
+  // se le acabe (antes solo lo notaba cuando el bot ya le decía a sus
+  // clientes "te atenderá una persona").
+  useEffect(() => {
+    if (!open) return;
+    const qs = selectedTenantId > 0 ? `?tenantId=${selectedTenantId}` : "";
+    fetch(`/api/llm-usage${qs}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setUsage(data))
+      .catch(() => setUsage(null));
+  }, [open, selectedTenantId]);
 
   // Cerrar al click fuera
   useEffect(() => {
@@ -140,6 +160,51 @@ export default function SettingsDropdown({
                 >
                   Tenants
                 </a>
+              </div>
+            )}
+
+            {/* Uso de IA */}
+            {usage && (
+              <div className="mb-4">
+                <div className="mb-2 text-sm font-semibold text-slate-800">
+                  Uso de IA hoy
+                </div>
+                {(() => {
+                  const pct = Math.min(
+                    100,
+                    Math.round(
+                      (usage.dailyCostUsd / usage.budgets.dailyUsd) * 100,
+                    ),
+                  );
+                  const barColor = usage.exceeded
+                    ? "bg-red-500"
+                    : pct >= 75
+                      ? "bg-amber-500"
+                      : "bg-emerald-500";
+                  return (
+                    <>
+                      <div className="mb-1 flex items-center justify-between text-xs text-gray-500">
+                        <span>
+                          ${usage.dailyCostUsd.toFixed(2)} / $
+                          {usage.budgets.dailyUsd.toFixed(2)} USD
+                        </span>
+                        <span>{pct}%</span>
+                      </div>
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-100">
+                        <div
+                          className={`h-full rounded-full transition-all duration-500 ${barColor}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                      {usage.exceeded && (
+                        <p className="mt-1.5 text-xs text-red-600">
+                          Presupuesto excedido — el bot está pasando a
+                          atención humana hasta que se renueve.
+                        </p>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             )}
 

@@ -7,7 +7,10 @@ const DATA_DIR = path.resolve(process.cwd(), "data");
 const BACKUP_DIR = path.resolve(process.cwd(), "data", "backups");
 const DB_PATH = path.join(DATA_DIR, "messages.db");
 
-const MAX_BACKUPS = parseInt(process.env.BACKUP_MAX_FILES || "14", 10);
+// El backup corre cada BACKUP_INTERVAL_HOURS (6h por defecto, ver
+// start-bot.ts) — con 14 archivos eso cubría solo ~3.5 días reales, no los
+// "14 días" que sugería el nombre. 56 = 14 días × 4 backups/día.
+const MAX_BACKUPS = parseInt(process.env.BACKUP_MAX_FILES || "56", 10);
 
 function ensureBackupDir(): void {
   if (!fs.existsSync(BACKUP_DIR)) {

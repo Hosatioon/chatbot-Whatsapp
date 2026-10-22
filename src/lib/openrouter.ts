@@ -1502,7 +1502,15 @@ async function executeTool(
     }
     case "addItem": {
       const pname = String(args.name ?? "");
-      const quantity = Math.max(1, Math.floor(Number(args.quantity ?? 1)) || 1);
+      // Tope superior: sin esto un mensaje tipo "quiero 999999999 galletas"
+      // generaba un draft con esa cantidad absurda — no es un problema de
+      // seguridad (el precio sigue viniendo de la BD, no del LLM/cliente),
+      // pero sí de validación de negocio.
+      const MAX_ITEM_QUANTITY = 500;
+      const quantity = Math.min(
+        MAX_ITEM_QUANTITY,
+        Math.max(1, Math.floor(Number(args.quantity ?? 1)) || 1),
+      );
       if (!ctx?.conversationId || !ctx.conversationState) {
         return {
           result: JSON.stringify({ error: "No hay conversación activa" }),

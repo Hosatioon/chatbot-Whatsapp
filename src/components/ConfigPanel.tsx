@@ -13,6 +13,7 @@ import {
   playNotificationSound,
   type NotificationSoundId,
 } from "@/lib/notification-sound";
+import Switch from "./Switch";
 
 interface TenantLink {
   label: string;
@@ -674,25 +675,19 @@ export default function ConfigPanel({
             Horarios de atención
           </h3>
           <div className="space-y-4">
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={config.business_hours.enabled}
-                onChange={(e) =>
-                  setConfig({
-                    ...config,
-                    business_hours: {
-                      ...config.business_hours,
-                      enabled: e.target.checked,
-                    },
-                  })
-                }
-                className="rounded border-gray-300"
-              />
-              <span className="text-sm font-medium text-gray-700">
-                Activar horarios de atención
-              </span>
-            </label>
+            <Switch
+              checked={config.business_hours.enabled}
+              onChange={(checked) =>
+                setConfig({
+                  ...config,
+                  business_hours: {
+                    ...config.business_hours,
+                    enabled: checked,
+                  },
+                })
+              }
+              label="Activar horarios de atención"
+            />
             {config.business_hours.enabled && (
               <>
                 <div>
@@ -971,28 +966,14 @@ export default function ConfigPanel({
                 texto cuando se acabe la promoción.
               </p>
             </div>
-            <label className="flex cursor-pointer items-start gap-2">
-              <input
-                type="checkbox"
-                checked={config.free_delivery_promo}
-                onChange={(e) =>
-                  setConfig({
-                    ...config,
-                    free_delivery_promo: e.target.checked,
-                  })
-                }
-                className="mt-0.5"
-              />
-              <span className="text-sm text-gray-700">
-                Domicilio gratis mientras dure la promoción
-                <span className="mt-0.5 block text-xs text-gray-400">
-                  A diferencia del mensaje de arriba, esto sí cambia el
-                  cálculo: el domicilio sale en $0 automáticamente, sin
-                  importar la distancia. Recuerda desactivarlo cuando termine
-                  la promoción.
-                </span>
-              </span>
-            </label>
+            <Switch
+              checked={config.free_delivery_promo}
+              onChange={(checked) =>
+                setConfig({ ...config, free_delivery_promo: checked })
+              }
+              label="Domicilio gratis mientras dure la promoción"
+              hint="A diferencia del mensaje de arriba, esto sí cambia el cálculo: el domicilio sale en $0 automáticamente, sin importar la distancia. Recuerda desactivarlo cuando termine la promoción."
+            />
           </div>
         </section>
 
