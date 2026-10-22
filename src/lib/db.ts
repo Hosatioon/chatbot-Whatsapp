@@ -1878,6 +1878,21 @@ const SEARCH_STOPWORDS = new Set([
   "mi",
   "me",
   "te",
+  // Relleno de cómo pide la gente por chat ("tienen torta de...", "me
+  // regala una ... porfa") \u2014 nunca es parte del nombre de un producto y,
+  // si se cuela, el AND de searchProducts lo exige en el nombre.
+  "quiero",
+  "quisiera",
+  "necesito",
+  "dame",
+  "regala",
+  "regalas",
+  "tienen",
+  "tiene",
+  "hay",
+  "favor",
+  "porfa",
+  "porfavor",
 ]);
 
 function normalizeForSearch(s: string): string {
@@ -1887,34 +1902,41 @@ function normalizeForSearch(s: string): string {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
+// Palabras significativas de un texto, ya normalizadas. Se corta por todo
+// lo que no sea letra o número: antes era solo por espacios, y un signo
+// pegado ("almojabana?", "galleta,") dejaba esa palabra sin poder
+// coincidir con nada.
+function searchWords(s: string): string[] {
+  return normalizeForSearch(s)
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length >= 3 && !SEARCH_STOPWORDS.has(w))
+    .map((w) => (w.endsWith("s") && w.length > 4 ? w.slice(0, -1) : w));
+}
+
 export function searchProducts(
   tenantId: number,
   query: string,
   limit = 10,
 ): Product[] {
-  const rawWords = query
-    .toLowerCase()
-    .trim()
-    .split(/\s+/)
-    .filter((w) => w.length >= 3 && !SEARCH_STOPWORDS.has(w))
-    .map((w) => (w.endsWith("s") && w.length > 4 ? w.slice(0, -1) : w));
+  const words = searchWords(query);
 
-  if (rawWords.length === 0) {
-    const fallbackWords = query
-      .toLowerCase()
-      .trim()
-      .split(/\s+/)
+  if (words.length === 0) {
+    const fallbackWords = normalizeForSearch(query)
+      .split(/[^a-z0-9]+/)
       .filter((w) => w.length >= 2);
     if (fallbackWords.length === 0) return [];
-    const fbWord = normalizeForSearch(fallbackWords[0]);
+    const fbWord = fallbackWords[0];
+    // Palabra completa, no substring: con 2 letras el substring matchea
+    // casi cualquier cosa ("No no quiero" → "no" dentro de "pandebono").
+    const hasWord = (s: string | null) =>
+      normalizeForSearch(s ?? "")
+        .split(/[^a-z0-9]+/)
+        .includes(fbWord);
     return (stmtAllActiveProducts.all(tenantId) as Product[]).filter(
-      (p) =>
-        normalizeForSearch(p.name).includes(fbWord) ||
-        normalizeForSearch(p.keywords ?? "").includes(fbWord),
+      (p) => hasWord(p.name) || hasWord(p.keywords),
     );
   }
 
-  const words = rawWords.map(normalizeForSearch);
   const allProducts = stmtAllActiveProducts.all(tenantId) as Product[];
 
   // Umbral mínimo: cada palabra debe coincidir en el nombre (score += 2 por palabra en nombre).
@@ -1947,7 +1969,40 @@ export function searchProducts(
     .slice(0, limit)
     .map((s) => s.product);
 
-  return scored;
+  if (scored.length > 0) return scored;
+
+  // Segundo intento: el nombre ENTERO del producto está al principio de lo
+  // que se pidió, y lo que sobra describe ese mismo producto.
+  // Bug real (Cookliz, 2026-10-20): el cliente pidió "2 tortas almojábana
+  // con bocadillo y queso" (así la describe el negocio), el producto se
+  // llama solo "torta de almojabana" y el AND de arriba exigía "bocadillo"
+  // y "queso" en el nombre — addItem devolvió "Producto no encontrado", el
+  // bot contestó "no tengo exactamente eso" y el dueño tuvo que entrar a
+  // decirle al cliente que sí había.
+  // Que esté al PRINCIPIO es el freno para no anotar el producto
+  // equivocado: en "galleta de maracuya con nutella" el producto pedido es
+  // la de maracuyá, no "Galleta de Nutella" aunque su nombre también esté
+  // contenido; y "almojabana con queso" no puede caer en algo que se llame
+  // solo "Queso".
+  const contained = allProducts
+    .map((p) => ({ product: p, nameWords: searchWords(p.name) }))
+    .filter(({ nameWords }) => {
+      if (nameWords.length === 0 || nameWords.length > words.length)
+        return false;
+      const head = new Set(words.slice(0, nameWords.length));
+      return nameWords.every((w) => head.has(w));
+    })
+    // El más específico gana ("Almojábana con queso" antes que "Almojábana").
+    .sort((a, b) => b.nameWords.length - a.nameWords.length);
+  // Dos con el mismo largo = ambiguo; mejor no adivinar y dejar que la
+  // sugerencia de searchProductsLoose le pregunte al cliente.
+  if (
+    contained.length === 0 ||
+    (contained.length > 1 &&
+      contained[1].nameWords.length === contained[0].nameWords.length)
+  )
+    return [];
+  return [contained[0].product];
 }
 
 // Búsqueda "sugerencia" para cuando searchProducts (arriba, estricta — exige
@@ -1965,13 +2020,7 @@ export function searchProductsLoose(
   query: string,
   limit = 5,
 ): Product[] {
-  const words = query
-    .toLowerCase()
-    .trim()
-    .split(/\s+/)
-    .filter((w) => w.length >= 3 && !SEARCH_STOPWORDS.has(w))
-    .map((w) => (w.endsWith("s") && w.length > 4 ? w.slice(0, -1) : w))
-    .map(normalizeForSearch);
+  const words = searchWords(query);
   if (words.length === 0) return [];
 
   const allProducts = stmtAllActiveProducts.all(tenantId) as Product[];
