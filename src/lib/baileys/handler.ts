@@ -540,7 +540,7 @@ async function handleSingleMessage(
   if (isNewChatToday) {
     if (hasExceededDailyLimit(tenantId)) {
       const limitMsg =
-        "Hoy hemos atendido el límite de chats de tu plan 😔\n\nTu plan se renueva mañana. Si necesitás más, contactá a tu administrador para actualizar.";
+        "Hoy hemos atendido el límite de chats de tu plan 😔\n\nTu plan se renueva mañana. Si necesitas más, contacta a tu administrador para actualizar.";
       try {
         await sendTextWithSafePreview(sock, remoteJid, limitMsg);
       } catch (e) {

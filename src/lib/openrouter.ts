@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import {
   buildSystemPromptForTenant,
+  buildOrderStateSection,
   buildOrderSummaryForCustomer,
 } from "./system-prompt";
 import {
@@ -80,7 +81,7 @@ function buildSystemPrompt(
   tenantId: number,
   conversationState?: ConversationState,
 ): string {
-  const basePrompt = buildSystemPromptForTenant(tenantId, conversationState);
+  const basePrompt = buildSystemPromptForTenant(tenantId);
   // BUG real encontrado (2026-09-12): con el límite en 10, un negocio con
   // más de 10 productos activos (típico: 15-20) dejaba productos reales
   // fuera de esta lista. El cliente pidió "pistacho" (producto #13
@@ -99,13 +100,15 @@ function buildSystemPrompt(
     }
     if (top.length >= CATALOG_PROMPT_LIMIT) {
       catalog +=
-        "\nEsta lista puede ser PARCIAL si el catálogo es más grande. Para precios y stock, o si no ves un producto que el cliente pidió, usá searchProducts o getStock — NUNCA asumas que no existe ni lo reemplaces por otro.\n";
+        "\nEsta lista puede ser PARCIAL si el catálogo es más grande. Para precios y stock, o si no ves un producto que el cliente pidió, usa searchProducts o getStock — NUNCA asumas que no existe ni lo reemplaces por otro.\n";
     } else {
       catalog +=
-        "\nEsta es la lista COMPLETA de productos activos. Si el cliente pide algo que no está aquí, probablemente no lo tenemos — pero igual usá searchProducts para confirmar antes de decir que no hay.\n";
+        "\nEsta es la lista COMPLETA de productos activos. Si el cliente pide algo que no está aquí, probablemente no lo tenemos — pero igual usa searchProducts para confirmar antes de decir que no hay.\n";
     }
   }
-  return basePrompt + catalog;
+  // El estado del pedido va al final para que todo lo anterior (fijo por
+  // negocio) se reutilice de la caché de prompt entre turnos.
+  return basePrompt + catalog + buildOrderStateSection(conversationState);
 }
 
 // Interfaz para respuesta estructurada del LLM
@@ -326,7 +329,7 @@ export async function generateReply(
       function: {
         name: "requestHuman",
         description:
-          "Llamala cuando el cliente pida EXPLÍCITAMENTE hablar con una persona/humano/asesor, diga que no quiere seguir hablando con un bot, o esté claramente frustrado y lo pida. Pasa la conversación a modo humano y avisa al negocio — vos seguís respondiendo este turno con un mensaje breve confirmando que ya le avisaste a alguien, nunca con un 'no puedo ayudarte con eso'.",
+          "Llámala cuando el cliente pida EXPLÍCITAMENTE hablar con una persona/humano/asesor, diga que no quiere seguir hablando con un bot, o esté claramente frustrado y lo pida. Pasa la conversación a modo humano y avisa al negocio — tú sigues respondiendo este turno con un mensaje breve confirmando que ya le avisaste a alguien, nunca con un 'no puedo ayudarte con eso'.",
         parameters: { type: "object", properties: {} },
       },
     },
@@ -578,7 +581,7 @@ export async function generateReply(
             tool_call_id: toolCall.id,
             content: JSON.stringify({
               success: true,
-              note: `Ese producto ya estaba en el pedido, no se modificó la cantidad. Si el cliente pidió MÁS unidades de verdad, confirmá la cantidad exacta y volvé a intentar.`,
+              note: `Ese producto ya estaba en el pedido, no se modificó la cantidad. Si el cliente pidió MÁS unidades de verdad, confirma la cantidad exacta y vuelve a intentar.`,
               draft_items: ctx.conversationState.draft_items.map(
                 (i) => `${i.quantity}x ${i.name}`,
               ),
@@ -736,9 +739,9 @@ export async function generateReply(
         messages.push({
           role: "system",
           content:
-            "Tu respuesta anterior no fue JSON válido. Mirá SOLO el último mensaje del cliente en el historial — " +
-            "NO repitas acciones de mensajes anteriores. Si ESE último mensaje menciona productos, llamá a addItem " +
-            "por cada uno. Si no hay productos que agregar, respondé solo con el JSON {intent, reply}.",
+            "Tu respuesta anterior no fue JSON válido. Mira SOLO el último mensaje del cliente en el historial — " +
+            "NO repitas acciones de mensajes anteriores. Si ESE último mensaje menciona productos, llama a addItem " +
+            "por cada uno. Si no hay productos que agregar, responde solo con el JSON {intent, reply}.",
         });
         completion = await client.chat.completions.create({
           model,
@@ -1394,7 +1397,7 @@ export async function executeTool(
             ...(loose.length > 0
               ? {
                   quizas_te_refieras_a: loose.map((p) => p.name),
-                  hint: `No hay un producto exacto para "${query}", pero estos se parecen: ${loose.map((p) => p.name).join(", ")}. Ofrecéselos al cliente como alternativa (ej: "No tengo exactamente eso, pero tengo X, ¿te sirve?") en vez de decir solo que no lo tenemos.`,
+                  hint: `No hay un producto exacto para "${query}", pero estos se parecen: ${loose.map((p) => p.name).join(", ")}. Ofrécelos al cliente como alternativa (ej: "No tengo exactamente eso, pero tengo X, ¿te sirve?") en vez de decir solo que no lo tenemos.`,
                 }
               : {}),
           }),
@@ -1411,7 +1414,7 @@ export async function executeTool(
           })),
           ...(allResults.length > results.length
             ? {
-                note: `Hay ${allResults.length} productos que coinciden, pero solo se muestran ${results.length}. Mencioná COMO MÁXIMO estos ${results.length} en tu respuesta — para el resto, recordale al cliente que ya tiene el link del catálogo.`,
+                note: `Hay ${allResults.length} productos que coinciden, pero solo se muestran ${results.length}. Menciona COMO MÁXIMO estos ${results.length} en tu respuesta — para el resto, recuérdale al cliente que ya tiene el link del catálogo.`,
               }
             : {}),
         }),
@@ -1502,7 +1505,7 @@ export async function executeTool(
       return {
         result: JSON.stringify({
           success: true,
-          hint: "Ya se avisó al negocio y la conversación pasó a atención humana. Respondé ESTE turno con un mensaje breve y cordial confirmando que ya le avisaste a alguien del equipo y que en breve le escriben — NUNCA digas que no podés ayudar ni dejes la pregunta sin respuesta.",
+          hint: "Ya se avisó al negocio y la conversación pasó a atención humana. Responde ESTE turno con un mensaje breve y cordial confirmando que ya le avisaste a alguien del equipo y que en breve le escriben — NUNCA digas que no puedes ayudar ni dejes la pregunta sin respuesta.",
         }),
         humanRequested: true,
       };
@@ -1637,7 +1640,7 @@ export async function executeTool(
             already_in_draft: true,
             name: product.name,
             quantity: inDraft,
-            note: `${product.name} ya está anotado con ${inDraft} unidades — no se sumó de nuevo para evitar duplicar. Si el cliente de verdad quiere MÁS unidades además de esas, llamá addItem otra vez pasando SOLO la cantidad ADICIONAL que pide (no el total).`,
+            note: `${product.name} ya está anotado con ${inDraft} unidades — no se sumó de nuevo para evitar duplicar. Si el cliente de verdad quiere MÁS unidades además de esas, llama addItem otra vez pasando SOLO la cantidad ADICIONAL que pide (no el total).`,
           }),
         };
       }
@@ -1681,7 +1684,7 @@ export async function executeTool(
             : {}),
           ...(belowMinimum
             ? {
-                below_minimum: `El pedido mínimo es $${minOrderAddItem.toLocaleString("es-CO")}. Lleva $${subtotal.toLocaleString("es-CO")}, le faltan $${(minOrderAddItem - subtotal).toLocaleString("es-CO")}. Si el cliente dice que no quiere agregar más, avisale que no se puede confirmar por debajo del mínimo.`,
+                below_minimum: `El pedido mínimo es $${minOrderAddItem.toLocaleString("es-CO")}. Lleva $${subtotal.toLocaleString("es-CO")}, le faltan $${(minOrderAddItem - subtotal).toLocaleString("es-CO")}. Si el cliente dice que no quiere agregar más, avísale que no se puede confirmar por debajo del mínimo.`,
               }
             : {}),
           draft_total: subtotal,
@@ -1949,7 +1952,7 @@ export async function executeTool(
           result: JSON.stringify({
             error:
               "Ya intentamos ubicar esa dirección antes y no se pudo — repetir el mismo texto no va a cambiar el resultado.",
-            next: 'Decile al cliente EXACTAMENTE: "No logro ubicar esa dirección por texto. ¿Podés enviarme tu ubicación por WhatsApp? (botón 📍, clip → Ubicación)". NO vuelvas a llamar setAddress con el mismo texto — esperá a que mande la ubicación o un link de Google Maps.',
+            next: 'Dile al cliente EXACTAMENTE: "No logro ubicar esa dirección por texto. ¿Puedes enviarme tu ubicación por WhatsApp? (botón 📍, clip → Ubicación)". NO vuelvas a llamar setAddress con el mismo texto — espera a que mande la ubicación o un link de Google Maps.',
           }),
         };
       }
@@ -2048,7 +2051,7 @@ export async function executeTool(
             distance_km: Number(km.toFixed(2)),
             delivery_price: deliveryPrice,
             distance_source: distSource,
-            next: 'Preguntar: "Perfecto, ya tengo tu ubicación. ¿Alguna referencia para el domiciliario — torre, apartamento, piso, portería, o algún negocio/lugar conocido cerca?" Cuando el cliente responda (aunque sea "no" o "ninguna", o mencione un negocio como referencia), llamá setAddress de nuevo pasando ESA respuesta como texto para guardarla. Esa referencia es solo para ubicarse — el precio del domicilio ya quedó fijo con esta ubicación, no cambia. Recién ahí avanzá a preguntar el pago.',
+            next: 'Preguntar: "Perfecto, ya tengo tu ubicación. ¿Alguna referencia para el domiciliario — torre, apartamento, piso, portería, o algún negocio/lugar conocido cerca?" Cuando el cliente responda (aunque sea "no" o "ninguna", o mencione un negocio como referencia), llama setAddress de nuevo pasando ESA respuesta como texto para guardarla. Esa referencia es solo para ubicarse — el precio del domicilio ya quedó fijo con esta ubicación, no cambia. Recién ahí avanza a preguntar el pago.',
           }),
         };
       }
@@ -2175,7 +2178,7 @@ export async function executeTool(
         // computeNextStep lo vuelve a exigir en los turnos siguientes
         // mientras no se capture.
         const askDetail =
-          '¿Alguna referencia para el domiciliario — torre, apartamento, piso, portería, o algún negocio/lugar conocido cerca?" Cuando el cliente responda (aunque sea "no" o "ninguna"), llamá setAddress de nuevo pasando ESA respuesta para guardarla. Recién ahí avanzá a preguntar el pago.';
+          '¿Alguna referencia para el domiciliario — torre, apartamento, piso, portería, o algún negocio/lugar conocido cerca?" Cuando el cliente responda (aunque sea "no" o "ninguna"), llama setAddress de nuevo pasando ESA respuesta para guardarla. Recién ahí avanza a preguntar el pago.';
         let next: string;
         if (skipConfirmation && resolution.details) {
           next = "Preguntar método de pago: ¿Transferencia o efectivo?";
@@ -2281,14 +2284,14 @@ export async function executeTool(
               `${i + 1}. ${c.address}\n   📍 https://www.google.com/maps?q=${c.lat},${c.lng}`,
           )
           .join("\n");
-        const ambiguousReply = `Encontré varias ubicaciones para "${resolution.reference}". ¿Cuál es la correcta?\n\n${candidateList}\n\nSi ninguna es correcta, mandame tu ubicación por WhatsApp (📎 → Ubicación).`;
+        const ambiguousReply = `Encontré varias ubicaciones para "${resolution.reference}". ¿Cuál es la correcta?\n\n${candidateList}\n\nSi ninguna es correcta, mándame tu ubicación por WhatsApp (📎 → Ubicación).`;
         return {
           result: JSON.stringify({
             success: false,
             ambiguous: true,
             candidates: resolution.candidates.map((c) => c.address),
             deterministic_reply: ambiguousReply,
-            next: "Mandale al cliente EXACTAMENTE el texto de deterministic_reply, sin resumirlo ni redactarlo de nuevo.",
+            next: "Mándale al cliente EXACTAMENTE el texto de deterministic_reply, sin resumirlo ni redactarlo de nuevo.",
           }),
         };
       }
@@ -2422,7 +2425,7 @@ export async function executeTool(
         return {
           result: JSON.stringify({
             error: `El pedido no alcanza el mínimo de $${minOrder.toLocaleString("es-CO")}. Faltan $${faltante.toLocaleString("es-CO")} en productos.`,
-            next: `Decile al cliente que el pedido mínimo es $${minOrder.toLocaleString("es-CO")} y que le faltan $${faltante.toLocaleString("es-CO")} — preguntale si quiere agregar algo más.`,
+            next: `Dile al cliente que el pedido mínimo es $${minOrder.toLocaleString("es-CO")} y que le faltan $${faltante.toLocaleString("es-CO")} — pregúntale si quiere agregar algo más.`,
           }),
         };
       }
