@@ -387,6 +387,15 @@ export async function resolveDeliveryAddress(
     `[resolver] raw="${rawText}" → reference="${reference}", details="${details}"${relativeAnchor ? `, anchor="${relativeAnchor}"` : ""}`,
   );
 
+  // BUG real (2026-10-11): el cliente mandó solo "Torre 3 apto 602" después
+  // de la dirección; todo quedó como detalle y la referencia vacía llegaba a
+  // findKnownPlaces(""), que devolvía todos los lugares conocidos — el bot
+  // ofreció 5 edificios al azar ("Encontré varias ubicaciones para \"\"").
+  // Sin referencia no hay nada que buscar.
+  if (reference.trim().length < 3) {
+    return { status: "not_found", reference, details: details ?? undefined };
+  }
+
   // 2. Buscar en lugares conocidos del tenant
   const knownMatches = findKnownPlaces(tenantId, reference);
   if (knownMatches.length === 1) {

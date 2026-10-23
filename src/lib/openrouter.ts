@@ -2053,7 +2053,7 @@ async function executeTool(
       if (
         resolution.status === "not_found" &&
         prevAddrFailed &&
-        isShortClarification &&
+        (isShortClarification || resolution.reference.trim().length < 3) &&
         s.draft_address
       ) {
         const combined = `${s.draft_address} ${input}`;
