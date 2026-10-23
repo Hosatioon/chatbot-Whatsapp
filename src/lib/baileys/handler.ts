@@ -35,6 +35,7 @@ import { sendTextWithSafePreview } from "./send";
 import { checkAndRecord } from "../rate-limit";
 import { debounceMessage, hasPendingDebounce } from "../debounce";
 import { acquireLLMSlot } from "../llm-concurrency";
+import { scheduleTurn, type TurnTicket } from "../conversation-turns";
 import {
   getStateForConversation,
   resetState,
@@ -387,10 +388,16 @@ export async function handleIncomingMessages(
   messages: WAMessage[],
 ): Promise<void> {
   for (const msg of messages) {
+    // El turno se suelta acá y no adentro: handleSingleMessage tiene muchas
+    // salidas (y puede tirar), y un turno sin soltar dejaría a esa
+    // conversación esperando al anterior hasta el timeout.
+    const turnHolder: { turn?: TurnTicket } = {};
     try {
-      await handleSingleMessage(tenantId, sock, msg);
+      await handleSingleMessage(tenantId, sock, msg, turnHolder);
     } catch (err) {
       console.error(`[bot:${tenantId}] Error en mensaje individual:`, err);
+    } finally {
+      turnHolder.turn?.release();
     }
   }
 }
@@ -399,6 +406,7 @@ async function handleSingleMessage(
   tenantId: number,
   sock: WASocket,
   msg: WAMessage,
+  turnHolder: { turn?: TurnTicket },
 ): Promise<void> {
   const remoteJid = msg.key.remoteJid;
   const fromMe = msg.key.fromMe;
@@ -759,7 +767,7 @@ async function handleSingleMessage(
   }
 
   // === Cargar estado de conversación ===
-  const convState = getStateForConversation(convo.id, tenantId);
+  let convState = getStateForConversation(convo.id, tenantId);
   console.log(
     `[bot:${tenantId}] Estado conversación: ${convState.state}, items=${convState.draft_items.length}, delivery=${convState.draft_delivery_method ?? "no"}, addr=${convState.draft_address ? "sí" : "no"}, pay=${convState.draft_payment ?? "no"}`,
   );
@@ -786,11 +794,28 @@ async function handleSingleMessage(
     return;
   }
 
+  // El ticket se saca ANTES del debounce para que un turno que ya esté
+  // generando se entere de que viene otro detrás (ver conversation-turns).
+  const turn = scheduleTurn(tenantId, convo.id);
+  turnHolder.turn = turn;
+
   // Esperar a que lleguen más mensajes (debounce)
   await debounceMessage(tenantId, convo.id, text);
+  await turn.wait();
   console.log(
     `[bot:${tenantId}] Debounce completado para ${phone}, llamando LLM`,
   );
+
+  // Mientras esperábamos, el turno anterior pudo pasar la conversación a
+  // humano o cambiar el carrito: se vuelve a leer todo desde la BD.
+  const afterWait = getConversationById(convo.id, tenantId);
+  if (!afterWait || afterWait.mode !== "AI") {
+    console.log(
+      `[bot] Conversación pasó a modo ${afterWait?.mode ?? "?"} mientras esperaba, no respondo`,
+    );
+    return;
+  }
+  convState = getStateForConversation(convo.id, tenantId);
 
   // Mostrar "escribiendo..." mientras se procesa — es una función nativa
   // de WhatsApp (no un truco), pensada exactamente para esto. Ayuda a que
@@ -807,9 +832,25 @@ async function handleSingleMessage(
   // Re-leer historial actualizado (incluye mensajes acumulados durante debounce)
   const freshHistory = getRecentHistory(convo.id, historyLimit);
 
+  // Si el turno anterior ya alcanzó a leer este mensaje y lo contestó, no
+  // queda nada pendiente: responder otra vez sería justo la respuesta doble.
+  // Se compara por id y no por "quién habló último": un acuse de archivo
+  // del bot puede quedar al final sin que nadie haya contestado el texto.
+  const lastUserMessageId =
+    [...freshHistory].reverse().find((m) => m.role === "user")?.id ?? 0;
+  if (turn.alreadyAnswered(lastUserMessageId)) {
+    console.log(
+      `[bot:${tenantId}] El turno anterior ya contestó lo de ${phone}, no respondo de nuevo`,
+    );
+    return;
+  }
+
   console.log(`[bot] llamando LLM con ${freshHistory.length} mensajes...`);
   const t0 = Date.now();
   let llmResponse: LLMResponse;
+  // Un pedido confirmado o un pase a humano ya pasaron de verdad: esa
+  // respuesta sale aunque venga otro turno detrás.
+  let mustSendReply = false;
   let usage: {
     model: string;
     promptTokens: number;
@@ -832,6 +873,7 @@ async function handleSingleMessage(
     });
     llmResponse = result.response;
     usage = result.usage;
+    mustSendReply = result.orderConfirmed || result.humanRequested;
 
     // Si el LLM confirmó el pedido via tool, enviar confirmación + notificar admin
     if (result.orderConfirmed && result.confirmedOrderId) {
@@ -1068,7 +1110,7 @@ async function handleSingleMessage(
 
   // Anti-bucle: si el LLM repite exactamente su mensaje anterior, redirigir
   // según el dato pendiente del draft (última línea de defensa)
-  const lastAssistantMsg = [...history]
+  const lastAssistantMsg = [...freshHistory]
     .reverse()
     .find((m) => m.role === "assistant")?.content;
   if (
@@ -1122,6 +1164,18 @@ async function handleSingleMessage(
       llmResponse.reply = buildOrderSummaryForCustomer(convState);
     }
   }
+
+  // El cliente escribió otra vez mientras se generaba esta respuesta: el
+  // turno que viene detrás va a leer todo junto y contestar con el contexto
+  // completo. Mandar esta también sería la respuesta doble (ver
+  // conversation-turns). Lo que hicieron los tools ya quedó guardado.
+  if (!mustSendReply && turn.shouldDiscardReply()) {
+    console.log(
+      `[bot:${tenantId}] ${phone} escribió de nuevo mientras se generaba la respuesta — se descarta, contesta el turno siguiente`,
+    );
+    return;
+  }
+  turn.markReplied(lastUserMessageId);
 
   // Si después de todo eso sigue vacío (no debería pasar, pero por las
   // dudas), no insertamos ni mandamos un mensaje en blanco — dejamos que
