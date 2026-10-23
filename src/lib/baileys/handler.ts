@@ -981,7 +981,7 @@ async function handleSingleMessage(
     console.error("[bot] Error llamando al LLM:", err);
     recordLLMUsage({
       tenant_id: tenantId,
-      model: process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini",
+      model: process.env.OPENROUTER_MODEL || "openai/gpt-5-mini",
       prompt_tokens: 0,
       completion_tokens: 0,
       total_tokens: 0,

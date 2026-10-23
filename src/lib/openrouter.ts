@@ -44,7 +44,7 @@ import { upsertCustomerAddress } from "./db";
 // vars de `.env.local` ya están cargadas automáticamente.
 
 const apiKey = process.env.OPENROUTER_API_KEY;
-const model = process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini";
+const model = process.env.OPENROUTER_MODEL || "openai/gpt-5-mini";
 
 if (!apiKey) {
   console.warn(
@@ -134,6 +134,13 @@ export interface LLMUsage {
 }
 
 const MAX_TOKENS = parseInt(process.env.LLM_MAX_TOKENS || "600", 10);
+
+// gpt-5 y la serie o son modelos de razonamiento: no aceptan temperature
+// (OpenRouter lo descartaba en silencio en cada llamada). Para el resto de
+// modelos se mantiene el 0.7 de siempre.
+const SAMPLING_PARAMS = /^openai\/(gpt-5|o\d)/.test(model)
+  ? {}
+  : { temperature: 0.7 };
 
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   "openai/gpt-4o-mini": { input: 0.15, output: 0.6 },
@@ -476,7 +483,7 @@ export async function generateReply(
     messages,
     tools,
     tool_choice: "auto",
-    temperature: 0.7,
+    ...SAMPLING_PARAMS,
     max_tokens: MAX_TOKENS,
   });
 
@@ -676,7 +683,7 @@ export async function generateReply(
       messages,
       tools,
       tool_choice: "auto",
-      temperature: 0.7,
+      ...SAMPLING_PARAMS,
       max_tokens: MAX_TOKENS,
       response_format: { type: "json_object" },
     });
@@ -748,7 +755,7 @@ export async function generateReply(
           messages,
           tools: safeRetryTools,
           tool_choice: "auto",
-          temperature: 0.7,
+          ...SAMPLING_PARAMS,
           max_tokens: MAX_TOKENS,
         });
         totalPromptTokens += completion.usage?.prompt_tokens ?? 0;
@@ -847,7 +854,7 @@ export async function generateReply(
         completion = await client.chat.completions.create({
           model,
           messages,
-          temperature: 0.7,
+          ...SAMPLING_PARAMS,
           max_tokens: MAX_TOKENS,
           response_format: { type: "json_object" },
         });
@@ -878,7 +885,7 @@ export async function generateReply(
           completion = await client.chat.completions.create({
             model,
             messages,
-            temperature: 0.7,
+            ...SAMPLING_PARAMS,
             max_tokens: MAX_TOKENS,
             response_format: { type: "json_object" },
           });

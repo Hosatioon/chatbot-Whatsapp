@@ -58,7 +58,7 @@ CATALOG_URL=https://drive.google.com/file/d/.../view
 | Variable             | Descripción                                                                                                     |
 | -------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `OPENROUTER_API_KEY` | Tu API key de [OpenRouter](https://openrouter.ai)                                                               |
-| `OPENROUTER_MODEL`   | Modelo LLM. Recomendado gratuito: `meta-llama/llama-3.3-70b-instruct:free`. En producción: `openai/gpt-4o-mini` |
+| `OPENROUTER_MODEL`   | Modelo LLM. Recomendado gratuito: `meta-llama/llama-3.3-70b-instruct:free`. En producción: `openai/gpt-5-mini` (o `@preset/<nombre>` de OpenRouter) |
 | `CATALOG_URL`        | Enlace al catálogo (Drive, PDF, etc). Se envía automáticamente después del saludo inicial                       |
 
 **Modelos gratuitos** (`:free`) tienen ~50 requests/día. Para
@@ -347,3 +347,11 @@ sqlite3 data/messages.db "SELECT * FROM messages ORDER BY created_at DESC LIMIT 
 - Transcripción de mensajes de audio.
 - Webhooks (notificar pedidos nuevos a un sistema externo).
 - Multi-tenant (un solo bot para múltiples negocios).
+
+### Migración a Postgres + Redis (en pausa)
+
+Producción corre con SQLite. `src/lib/db-pg.ts`, `db-adapter.ts`,
+`queue.ts`, `redis.ts` y `bot-service/` son la migración a Postgres/Redis a
+medio hacer: no los importa nada de lo que corre hoy y están excluidos de
+`tsconfig.json` (no compilan: faltan `bullmq`/`ioredis` y métodos del
+adaptador). Al retomarla, sacarlos del `exclude` y arreglar esos errores.

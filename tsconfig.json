@@ -30,5 +30,12 @@
     "scripts/**/*.ts",
     ".next/dev/types/**/*.ts"
   ],
-  "exclude": ["node_modules", "bot-service"]
+  "exclude": [
+    "node_modules",
+    "bot-service",
+    "src/lib/db-pg.ts",
+    "src/lib/db-adapter.ts",
+    "src/lib/queue.ts",
+    "src/lib/redis.ts"
+  ]
 }

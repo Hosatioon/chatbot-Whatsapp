@@ -7,7 +7,9 @@ Copiá `.env.example` a `.env.local` y completá:
 ```bash
 # OpenRouter (LLM)
 OPENROUTER_API_KEY=sk-or-v1-...
-OPENROUTER_MODEL=openai/gpt-4o-mini
+# En producción desde 2026-09-29. Para fijar el razonamiento bajo, crear un
+# preset en OpenRouter y poner aquí OPENROUTER_MODEL=@preset/<nombre>.
+OPENROUTER_MODEL=openai/gpt-5-mini
 
 # NextAuth
 AUTH_SECRET=$(openssl rand -base64 32)
