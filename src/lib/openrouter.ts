@@ -346,7 +346,13 @@ export async function generateReply(
             },
             quantity: {
               type: "number",
-              description: "Cantidad a agregar (default 1)",
+              description:
+                "Cantidad a agregar (default 1). Con set_total=true es el total final de ese producto en el pedido.",
+            },
+            set_total: {
+              type: "boolean",
+              description:
+                "true cuando el cliente CORRIGE o vuelve a decir cuántas quiere en total de un producto que ya está en el pedido (ej: 'mejor solo 4', 'entonces deme 4 de Nutella'). Así quantity reemplaza lo anotado en vez de sumarse.",
             },
           },
           required: ["name"],
@@ -358,7 +364,7 @@ export async function generateReply(
       function: {
         name: "removeItem",
         description:
-          "Quitar un producto del pedido por nombre. Úsala cuando el cliente quiera quitar o corregir un item.",
+          "Quitar un producto entero del pedido por nombre. Úsala cuando el cliente ya no quiera ese producto. Para cambiar solo la cantidad, usa addItem con set_total=true.",
         parameters: {
           type: "object",
           properties: {
@@ -1352,7 +1358,8 @@ export async function generateReply(
   };
 }
 
-async function executeTool(
+// Exportada solo para las pruebas (add-item.test.ts).
+export async function executeTool(
   name: string,
   args: Record<string, unknown>,
   tenantId: number,
@@ -1543,19 +1550,22 @@ async function executeTool(
         // con bocadillo y queso", el bot dijo "no lo tenemos" sin más, cuando
         // el negocio sí tenía "Torta de almojabana" (comparte palabras con
         // ambos pedidos). Primero intentamos una sugerencia relacionada por
-        // palabra en común; solo si eso tampoco da nada, caemos a la muestra
-        // genérica de antes.
-        const loose = searchProductsLoose(tenantId, pname, 5);
-        const available =
-          loose.length > 0 ? loose : getTopProducts(tenantId, 5);
+        // palabra en común.
+        //
+        // BUG real (2026-10-11): si eso tampoco daba nada, caíamos a la
+        // muestra genérica de antes — para "botella de agua" y "michelada de
+        // tamarindo" el bot ofreció cheesecake y croissant, los primeros del
+        // catálogo, que no tienen nada que ver. Sin nada parecido, no se
+        // ofrece nada: se dice que no está y se recuerda el catálogo.
+        const loose = searchProductsLoose(tenantId, pname, 3);
         return {
           result: JSON.stringify({
             error: `Producto no encontrado: ${pname}`,
-            available_products: available.map((p) => p.name),
+            available_products: loose.map((p) => p.name),
             hint:
               loose.length > 0
-                ? `No hay un producto exacto para "${pname}", pero estos se parecen: ${available.map((p) => p.name).join(", ")}. Ofrecéselos como alternativa (ej: "No tengo exactamente eso, pero tengo X, ¿te sirve?") en vez de decir solo que no lo tenemos. NUNCA llames addItem vos mismo con esa alternativa — esperá a que el cliente confirme cuál quiere.`
-                : "Dile al cliente que no tenemos ese producto. Como máximo mencioná estas 5 opciones de available_products como ejemplo — NUNCA listes más de 5. Ya le mandaste el link del catálogo al inicio de la conversación, así que no hace falta enumerar todo lo que hay: si quiere ver más, que revise el catálogo.",
+                ? `No hay un producto exacto para "${pname}", pero estos se parecen: ${loose.map((p) => p.name).join(", ")}. Ofrécelos como alternativa (ej: "No tengo exactamente eso, pero tengo X, ¿te sirve?") en vez de decir solo que no lo tenemos. NUNCA llames addItem tú mismo con esa alternativa — espera a que el cliente confirme cuál quiere.`
+                : `No tenemos nada parecido a "${pname}". Dile al cliente que eso no lo manejamos y que en el catálogo puede ver todo lo que hay. NO le ofrezcas otros productos que no se parecen a lo que pidió.`,
           }),
         };
       }
@@ -1573,6 +1583,30 @@ async function executeTool(
         (i: DraftItem) => i.name.toLowerCase() === product.name.toLowerCase(),
       );
       const inDraft = existing?.quantity ?? 0;
+
+      // BUG real (2026-10-11): el cliente pidió 30 de Nutella, quedaron 5
+      // (todo el stock) y cuando corrigió "entonces 4 de Nutella" el LLM
+      // llamó addItem(4) — addToDraft SUMA, así que intentó llevarlo a 9 y
+      // falló por stock. Con set_total, quantity es el total final que
+      // quiere el cliente: se baja directo o se suma solo la diferencia.
+      const setTotal = args.set_total === true && !!existing;
+      if (setTotal && existing && quantity <= inDraft) {
+        existing.quantity = quantity;
+        computeStateFromDraft(ctx.conversationState);
+        saveState(ctx.conversationState);
+        return {
+          result: JSON.stringify({
+            success: true,
+            added: { name: product.name, quantity, price: product.price },
+            note: `${product.name} quedó con ${quantity} en total.`,
+            draft_total: computeDraftTotal(ctx.conversationState.draft_items),
+            draft_items: ctx.conversationState.draft_items.map(
+              (i: DraftItem) => `${i.quantity}x ${i.name}`,
+            ),
+          }),
+        };
+      }
+      const toAdd = setTotal ? quantity - inDraft : quantity;
 
       // SAFETY NET (bug real 2026-09-12): el LLM a veces vuelve a llamar
       // addItem para un producto que YA quedó anotado con exactamente la
@@ -1597,7 +1631,7 @@ async function executeTool(
         /\b(mas|más|otro|otra|otros|otras|adicional|adicionales|aparte|extra|doble|triple)\b/i.test(
           ctx.lastCustomerMessage,
         );
-      if (inDraft > 0 && inDraft === quantity && !asksForMore) {
+      if (!setTotal && inDraft > 0 && inDraft === quantity && !asksForMore) {
         return {
           result: JSON.stringify({
             already_in_draft: true,
@@ -1618,8 +1652,9 @@ async function executeTool(
           }),
         };
       }
-      const finalQty = Math.min(quantity, available);
-      const capped = finalQty < quantity;
+      const finalQty = Math.min(toAdd, available);
+      const capped = finalQty < toAdd;
+      const newTotal = inDraft + finalQty;
       addToDraft(ctx.conversationState, product.name, finalQty, product.price);
       computeStateFromDraft(ctx.conversationState);
       saveState(ctx.conversationState);
@@ -1632,12 +1667,16 @@ async function executeTool(
           success: true,
           added: {
             name: product.name,
-            quantity: finalQty,
+            quantity: setTotal ? newTotal : finalQty,
             price: product.price,
           },
+          // Antes decía "Solo tengo ${finalQty}" — con unidades ya anotadas
+          // ese número era lo sumado, no lo que el cliente se lleva. Y el
+          // cliente que pidió 30 y recibe 5 tiene que poder decir si le
+          // sirven: se le pregunta en vez de darlo por hecho.
           ...(capped
             ? {
-                warning: `Solo se agregaron ${finalQty} de ${quantity} pedidas de ${product.name}. Dile al cliente: "Solo tengo ${finalQty} disponibles de ${product.name}". NO menciones stock restante ni números de inventario.`,
+                warning: `No alcanzó el stock: pidió ${setTotal ? quantity : inDraft + toAdd} de ${product.name} y quedaron ${newTotal} anotadas, que es todo lo disponible. Dile al cliente: "Solo tengo ${newTotal} de ${product.name}, te las dejé anotadas. ¿Te sirve así?". NO menciones otros números de inventario.`,
               }
             : {}),
           ...(belowMinimum
